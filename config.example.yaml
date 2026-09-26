@@ -1,0 +1,52 @@
+# Скопируйте в config.yaml и правьте под себя.
+
+nspd:
+  timeout: 20
+  min_delay: 1.0            # пауза между запросами к НСПД, сек. Меньше 0.5 — риск бана IP
+  retries: 3
+  cache_path: .cache/nspd.sqlite
+  cache_ttl_days: 7
+  ca_bundle: certs/Russian_Trusted_Root_CA.cer   # корневой сертификат Минцифры (PEM), путь относительно этого конфига
+  proxy: null               # http://user:pass@host:port — только если ваш IP не российский
+
+scan:
+  max_area_km2: 25          # защита от гигантских сканов
+  exclude_layers:           # вырезаются из свободной территории
+    - oopt                  # ООПТ
+    - tor                   # ТОР
+    - oez                   # ОЭЗ
+    - okn                   # территории объектов культурного наследия
+    - planned_by_scheme     # участки, уже образуемые по схемам (кто-то уже подал)
+    - planned_by_survey     # участки по проектам межевания
+  flag_layers:              # не вырезаются, но помечают кандидата
+    - zouit                 # ЗОУИТ: охранные/водоохранные/санитарные зоны
+    - forestry              # лесничества (лесной фонд — свои правила)
+    - settlements           # границы населённых пунктов
+    - water                 # водные объекты
+  fetch_zone_permitted_uses: true
+  allowed_zone_patterns: [] # напр. ["^СХ", "сельскохоз"] — оставить только эти терзоны
+  hectare:
+    side_m: 100
+    inset_m: 5
+    max_cells: 300
+    min_patch_m2: 10000
+
+parcel_filter:              # фильтр для слоя «ЗУ, свободные от прав третьих лиц»
+  vri_keywords: [сельскохозяйств, садоводств, индивидуальн, личного подсобного, крестьянск]
+  min_area_m2: 0
+  max_area_m2: 10000
+  exclude_statuses: [Архивный, Аннулированный, Снят]
+
+output_dir: out
+
+# Дополнительные источники. role: exclude | flag | zones
+extra_sources: []
+#  - name: fgistp_pzz_artem
+#    type: wfs
+#    role: zones
+#    url: https://<найденный-через-DevTools>/wfs
+#    type_name: <workspace:layer>
+#  - name: dv_grey_zones
+#    type: file
+#    role: exclude
+#    path: data/grey_zones.geojson   # ваш экспорт/разметка серых зон
