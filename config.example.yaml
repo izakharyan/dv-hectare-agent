@@ -7,7 +7,12 @@ nspd:
   cache_path: .cache/nspd.sqlite
   cache_ttl_days: 7
   ca_bundle: certs/Russian_Trusted_Root_CA.cer   # корневой сертификат Минцифры (PEM), путь относительно этого конфига
-  proxy: null               # http://user:pass@host:port — только если ваш IP не российский
+  proxy: null               # прокси ТОЛЬКО для НСПД. null = напрямую (НСПД пускает лишь российские IP)
+
+gemini:
+  model: null               # null → gemini-3.8-flash (или переменная GEMINI_MODEL)
+  proxy: null               # прокси ТОЛЬКО для Gemini: http://127.0.0.1:10809 или socks5://127.0.0.1:10808
+  timeout: 120
 
 scan:
   max_area_km2: 25          # защита от гигантских сканов

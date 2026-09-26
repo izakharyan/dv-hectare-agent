@@ -148,3 +148,32 @@ def test_gemini_agent_loop(client, tmp_path):
     from dvhectare.agent.gemini_agent import _function_declarations
 
     assert len(_function_declarations(types)) == 4
+
+
+def test_separate_proxies(monkeypatch, tmp_path):
+    """НСПД не подхватывает системный прокси; у Gemini — свой прокси из конфига."""
+    from dvhectare.config import load_settings
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "nspd:\n  proxy: null\ngemini:\n  proxy: socks5://127.0.0.1:10808\n  model: gemini-3.5-flash-lite\n",
+        encoding="utf-8",
+    )
+    s = load_settings(cfg)
+    assert s.nspd.proxy is None
+    assert s.gemini.proxy == "socks5://127.0.0.1:10808" and s.gemini.model == "gemini-3.5-flash-lite"
+
+    # системный прокси (например, заведённый ради Gemini) НСПД игнорирует
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    c = NspdClient(min_delay=0, cache_path=None)
+    assert c._http._trust_env is False
+    assert not any(t for t in c._http._mounts.values() if t is not None)
+    c.close()
+
+    pytest.importorskip("google.genai")
+    from dvhectare.agent.gemini_agent import make_client
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    g = make_client(proxy=s.gemini.proxy)
+    mounts = g._api_client._httpx_client._mounts
+    assert any(t is not None for t in mounts.values()), "у Gemini должен быть свой прокси"

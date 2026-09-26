@@ -16,7 +16,14 @@ class NspdSettings:
     cache_path: Optional[str] = ".cache/nspd.sqlite"
     cache_ttl_days: int = 7
     ca_bundle: Optional[str] = None  # путь к russian_trusted_root_ca.pem
-    proxy: Optional[str] = None      # http://user:pass@host:port (российский IP)
+    proxy: Optional[str] = None      # прокси только для НСПД; null = напрямую (нужен российский IP)
+
+
+@dataclass
+class GeminiSettings:
+    model: Optional[str] = None      # None → GEMINI_MODEL или gemini-3.8-flash
+    proxy: Optional[str] = None      # прокси только для Gemini: http://host:port или socks5://host:port
+    timeout: float = 120.0
 
 
 @dataclass
@@ -69,6 +76,7 @@ class ExtraSource:
 @dataclass
 class Settings:
     nspd: NspdSettings = field(default_factory=NspdSettings)
+    gemini: GeminiSettings = field(default_factory=GeminiSettings)
     scan: ScanSettings = field(default_factory=ScanSettings)
     parcel_filter: ParcelFilter = field(default_factory=ParcelFilter)
     extra_sources: list[ExtraSource] = field(default_factory=list)

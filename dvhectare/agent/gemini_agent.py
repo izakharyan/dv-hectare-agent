@@ -28,6 +28,22 @@ SYSTEM_PROMPT = """Ты — ассистент по подбору земли п
 Отвечай по-русски, кратко и по делу."""
 
 
+def make_client(proxy: str | None = None, timeout: float = 120.0):
+    """Клиент Gemini. Ключ берётся из GEMINI_API_KEY (или GOOGLE_API_KEY).
+
+    proxy — отдельный прокси только для Gemini (http://host:port, socks5://host:port).
+    Запросы к НСПД он не затрагивает.
+    """
+    from google import genai
+    from google.genai import types
+
+    http = {"timeout": int(timeout * 1000)}  # SDK ждёт миллисекунды
+    if proxy:
+        http["client_args"] = {"proxy": proxy}
+        http["async_client_args"] = {"proxy": proxy}
+    return genai.Client(http_options=types.HttpOptions(**http))
+
+
 def _function_declarations(types) -> list:
     return [
         types.FunctionDeclaration(
@@ -54,6 +70,8 @@ def run_agent(
     model: str | None = None,
     max_turns: int = 12,
     client: Any = None,  # для тестов можно подставить фейковый клиент
+    proxy: str | None = None,
+    timeout: float = 120.0,
 ) -> str:
     try:
         from google import genai
@@ -61,7 +79,7 @@ def run_agent(
     except ImportError as e:
         raise SystemExit('Установите extras: pip install -e ".[agent]"') from e
 
-    client = client or genai.Client()  # ключ из GEMINI_API_KEY (или GOOGLE_API_KEY)
+    client = client or make_client(proxy=proxy, timeout=timeout)
     model = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
     handlers = make_handlers(scanner, out_dir)
     config = types.GenerateContentConfig(

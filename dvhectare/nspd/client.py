@@ -87,7 +87,13 @@ class NspdClient:
         self._last_request = 0.0
         self.cache = ResponseCache(cache_path, cache_ttl) if cache_path else None
         kwargs: dict[str, Any] = dict(
-            base_url=BASE_URL, timeout=timeout, headers=DEFAULT_HEADERS, follow_redirects=True
+            base_url=BASE_URL,
+            timeout=timeout,
+            headers=DEFAULT_HEADERS,
+            follow_redirects=True,
+            # Системные HTTP(S)_PROXY игнорируем: НСПД ходит либо напрямую, либо через nspd.proxy.
+            # Иначе прокси, заведённый для Gemini, утянет и НСПД на зарубежный IP → 403.
+            trust_env=False,
         )
         if transport is not None:
             kwargs["transport"] = transport

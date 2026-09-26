@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Поиск свободной земли под «Дальневосточный гектар» по данным НСПД (ex-ПКК)"
 requires-python = ">=3.10"
 dependencies = [
-    "httpx>=0.27",
+    "httpx[socks]>=0.27",   # socks — чтобы прокси можно было задавать как socks5://
     "shapely>=2.0",
     "pyproj>=3.6",
     "pyyaml>=6.0",

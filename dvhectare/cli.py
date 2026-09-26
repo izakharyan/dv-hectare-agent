@@ -103,7 +103,8 @@ def main(argv=None) -> int:
         elif args.cmd == "agent":
             from .agent import run_agent
 
-            print(run_agent(args.prompt, scanner, s.output_dir, model=args.model))
+            g = s.gemini
+            print(run_agent(args.prompt, scanner, s.output_dir, model=args.model or g.model, proxy=g.proxy, timeout=g.timeout))
     return 0
 
 
