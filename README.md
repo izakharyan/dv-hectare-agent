@@ -29,13 +29,14 @@ python -m dvhectare scan  --bbox 132.16,43.34,132.20,43.36 --zone "^СХ"
 `map.html` (карта со слоями), `candidates.geojson`, `free_area.geojson`, `parcels.geojson`,
 `terr_zones.geojson`, `excl_*.geojson`, `flag_*.geojson`, `scan.gpkg` (для QGIS), `summary.json`.
 
-### Агент на естественном языке
+### Агент на естественном языке (Gemini)
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:GEMINI_API_KEY = "..."    # ключ из aistudio.google.com → Get API key
 python -m dvhectare agent "Найди свободные гектары в сельхоз-зонах в 1 км от 43.35, 132.18"
 ```
-По умолчанию используется Claude Haiku (`claude-haiku-4-5`). Другую модель можно задать через `--model` или переменную `ANTHROPIC_MODEL`.
+По умолчанию используется `gemini-3.8-flash`. Другую модель можно задать через `--model`
+или переменную `GEMINI_MODEL` (например, `gemini-3.5-flash-lite` — дешевле).
 
 ## Как это работает
 
@@ -60,7 +61,7 @@ python -m dvhectare agent "Найди свободные гектары в се�
 | `dvhectare/analysis.py` | `Scanner.scan()` — вся логика поиска |
 | `dvhectare/sources/wfs.py` | Универсальный WFS + заготовка `FgisTpSource` под ФГИС ТП |
 | `dvhectare/sources/files.py` | Локальные слои (GeoJSON/KML/GPKG/SHP) |
-| `dvhectare/agent/` | Инструменты и цикл tool use для Claude API |
+| `dvhectare/agent/` | Инструменты и цикл function calling для Gemini API |
 | `tests/fake_nspd.py` | Фейковый НСПД для офлайн-тестов |
 
 ## Эндпоинты НСПД

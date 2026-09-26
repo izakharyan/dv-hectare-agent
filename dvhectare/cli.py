@@ -70,7 +70,7 @@ def main(argv=None) -> int:
             sp.add_argument("--zone", action="append", default=None, help="регулярка по названию зоны (можно несколько)")
             sp.add_argument("--no-html", action="store_true")
 
-    sp = sub.add_parser("agent", help="диалоговый агент на Claude API")
+    sp = sub.add_parser("agent", help="диалоговый агент на Gemini API")
     sp.add_argument("prompt")
     sp.add_argument("--model", default=None)
 

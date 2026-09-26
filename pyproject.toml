@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 geo = ["geopandas>=0.14", "pyogrio>=0.7", "folium>=0.16"]
-agent = ["anthropic>=0.40"]
+agent = ["google-genai>=2.0"]
 dev = ["pytest>=8"]
 
 [project.scripts]

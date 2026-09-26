@@ -1,4 +1,4 @@
-"""Функции-инструменты для LLM-агента. Каждая возвращает JSON-сериализуемый dict."""
+"""Функции-инструменты для LLM-агента (Gemini). Каждая возвращает JSON-сериализуемый dict."""
 from __future__ import annotations
 
 from typing import Any, Callable

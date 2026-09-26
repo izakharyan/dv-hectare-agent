@@ -115,3 +115,36 @@ def test_agent_tool_handlers(client, tmp_path):
     here = h["what_is_here"](*CENTER, layers=["terr_zones", "zouit"])
     assert here["terr_zones"]
     json.dumps(h["zones_in_area"](*CENTER, radius_km=0.5), ensure_ascii=False)
+
+
+def test_gemini_agent_loop(client, tmp_path):
+    pytest.importorskip("google.genai")
+    from google.genai import types
+
+    from dvhectare.agent import run_agent
+
+    class FakeModels:
+        def __init__(self):
+            self.calls = []
+
+        def generate_content(self, model, contents, config):
+            self.calls.append(contents)
+            if len(self.calls) == 1:
+                part = types.Part(function_call=types.FunctionCall(name="get_parcel", args={"cad_number": "25:27:000000:2"}))
+            else:
+                last = contents[-1].parts[0].function_response
+                assert last.name == "get_parcel" and last.response["found"] is True
+                part = types.Part.from_text(text="Участок найден, 5000 м².")
+            return types.GenerateContentResponse(
+                candidates=[types.Candidate(content=types.Content(role="model", parts=[part]))]
+            )
+
+    class FakeClient:
+        models = FakeModels()
+
+    out = run_agent("Что за участок 25:27:000000:2?", Scanner(client, Settings(), extra_sources=[]), str(tmp_path), client=FakeClient())
+    assert "5000" in out
+    # декларации инструментов собираются без ошибок
+    from dvhectare.agent.gemini_agent import _function_declarations
+
+    assert len(_function_declarations(types)) == 4
