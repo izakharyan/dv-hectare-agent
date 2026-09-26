@@ -61,13 +61,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-def make_handlers(scanner: Scanner, out_dir: str) -> dict[str, Callable[..., Any]]:
+def make_handlers(scanner: Scanner, out_dir: str, session_map: Any = None) -> dict[str, Callable[..., Any]]:
+    """session_map (SessionMap) — если передан, всё найденное попадёт на итоговую карту агента."""
     client = scanner.client
+    sm = session_map
 
     def get_parcel(cad_number: str) -> dict:
         f = client.find_parcel(cad_number)
         if not f:
             return {"found": False, "cad_number": cad_number}
+        if sm is not None:
+            sm.add_parcel(f)
         r = parcel_record(f)
         g = r.pop("geometry")
         if g is not None:
@@ -78,16 +82,23 @@ def make_handlers(scanner: Scanner, out_dir: str) -> dict[str, Callable[..., Any
     def what_is_here(lat: float, lon: float, layers: list[str] | None = None) -> dict:
         keys = layers or ["parcels", "terr_zones", "zouit", "oopt", "settlements", "forestry"]
         out: dict[str, Any] = {}
+        raw: dict[str, list[dict]] = {}
         for k in keys:
             feats = client.features_at_point(lon, lat, get_layer(k).layer_id)
+            raw[k] = feats
             if k == "parcels":
                 out[k] = [{kk: vv for kk, vv in parcel_record(f).items() if kk != "geometry"} for f in feats]
             else:
                 out[k] = [zone_title(f) for f in feats]
+        if sm is not None:
+            sm.add_point(lat, lon, out, raw)
         return out
 
     def zones_in_area(lat: float, lon: float, radius_km: float = 1) -> dict:
-        zs = scanner.zones(bbox_around(lat, lon, radius_km))
+        bbox = bbox_around(lat, lon, radius_km)
+        zs = scanner.zones(bbox)
+        if sm is not None:
+            sm.add_zones(bbox, zs)
         return {
             "zones": [
                 {"title": f["properties"]["_title"], "permitted_uses": (f["properties"].get("_permitted_uses") or [])[:20]}
@@ -101,6 +112,8 @@ def make_handlers(scanner: Scanner, out_dir: str) -> dict[str, Callable[..., Any
             scanner.s.scan.allowed_zone_patterns = allowed_zone_patterns
         res = scanner.scan(bbox_around(lat, lon, radius_km))
         path = save_scan(res, out_dir)
+        if sm is not None:
+            sm.add_scan(res)
         return {"saved_to": str(path), **res.summary()}
 
     return {

@@ -48,11 +48,8 @@ def _nspd_fc(features: list[dict], layer: str) -> dict:
     return _fc(out)
 
 
-def save_scan(res: ScanResult, out_dir: str | Path, *, gpkg: bool = True, html: bool = True) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    d = Path(out_dir) / f"scan_{stamp}"
-    d.mkdir(parents=True, exist_ok=True)
-
+def scan_layers(res: ScanResult) -> dict[str, dict]:
+    """Все слои скана как FeatureCollection (для GeoJSON/GPKG/карты)."""
     layers: dict[str, dict] = {
         "candidates": _fc(
             {"type": "Feature", "geometry": mapping(c.geometry), "properties": {**c.as_dict(), "zones": "; ".join(c.zones), "flags": "; ".join(c.flags), "zone_permitted_uses": "; ".join(c.zone_permitted_uses)}}
@@ -67,6 +64,23 @@ def save_scan(res: ScanResult, out_dir: str | Path, *, gpkg: bool = True, html: 
         layers[f"excl_{k}"] = _nspd_fc(fs, k)
     for k, fs in res.flags.items():
         layers[f"flag_{k}"] = _nspd_fc(fs, k)
+    return layers
+
+
+def layer_kind(name: str) -> str:
+    """Тип слоя → стиль на карте."""
+    if name.startswith("excl_"):
+        return "exclusion"
+    if name.startswith("flag_"):
+        return "flag"
+    return name
+
+
+def save_scan(res: ScanResult, out_dir: str | Path, *, gpkg: bool = True, html: bool = True) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    d = Path(out_dir) / f"scan_{stamp}"
+    d.mkdir(parents=True, exist_ok=True)
+    layers = scan_layers(res)
 
     for name, fc in layers.items():
         (d / f"{name}.geojson").write_text(json.dumps(fc, ensure_ascii=False), encoding="utf-8")
@@ -91,34 +105,80 @@ def save_scan(res: ScanResult, out_dir: str | Path, *, gpkg: bool = True, html: 
 
 
 def write_map(res: ScanResult, layers: dict[str, dict], path: Path) -> None:
+    render_map([(n, layer_kind(n), fc) for n, fc in layers.items()], path, bbox=res.bbox)
+
+
+STYLES: dict[str, dict] = {
+    "parcels": {"color": "#666", "weight": 1, "fillOpacity": 0.05},
+    "free_area": {"color": "#2e7d32", "weight": 0, "fillOpacity": 0.25},
+    "candidates": {"color": "#1565c0", "weight": 2, "fillOpacity": 0.35},
+    "terr_zones": {"color": "#8e24aa", "weight": 1, "fillOpacity": 0.0, "dashArray": "4"},
+    "free_parcels_filtered": {"color": "#f9a825", "weight": 2, "fillOpacity": 0.3},
+    "exclusion": {"color": "#c62828", "weight": 1, "fillOpacity": 0.2},
+    "flag": {"color": "#ef6c00", "weight": 1, "fillOpacity": 0.1},
+    "parcel_focus": {"color": "#d81b60", "weight": 3, "fillOpacity": 0.2},
+    "point_objects": {"color": "#00838f", "weight": 2, "fillOpacity": 0.1},
+}
+
+
+def render_map(
+    layers: list[tuple[str, str, dict]],
+    path: Path,
+    *,
+    bbox: tuple[float, float, float, float] | None = None,
+    markers: list[tuple[float, float, str]] | None = None,
+    rectangles: list[tuple[tuple[float, float, float, float], str]] | None = None,
+    note_html: str | None = None,
+) -> Path:
+    """Универсальная HTML-карта. layers: (название в легенде, тип стиля, FeatureCollection)."""
     import folium
 
-    x1, y1, x2, y2 = res.bbox
-    m = folium.Map(location=[(y1 + y2) / 2, (x1 + x2) / 2], zoom_start=14, tiles=None)
+    m = folium.Map(location=[43.12, 131.9], zoom_start=12, tiles=None)
     folium.TileLayer("OpenStreetMap", name="OSM").add_to(m)
     folium.TileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri", name="Спутник",
     ).add_to(m)
-    styles = {
-        "parcels": {"color": "#666", "weight": 1, "fillOpacity": 0.05},
-        "free_area": {"color": "#2e7d32", "weight": 0, "fillOpacity": 0.25},
-        "candidates": {"color": "#1565c0", "weight": 2, "fillOpacity": 0.35},
-        "terr_zones": {"color": "#8e24aa", "weight": 1, "fillOpacity": 0.0, "dashArray": "4"},
-        "free_parcels_filtered": {"color": "#f9a825", "weight": 2, "fillOpacity": 0.3},
-    }
-    for name, fc in layers.items():
+
+    bounds: list[list[float]] = []
+    for name, kind, fc in layers:
         if not fc["features"]:
             continue
-        st = styles.get(name) or ({"color": "#c62828", "weight": 1, "fillOpacity": 0.2} if name.startswith("excl_") else {"color": "#ef6c00", "weight": 1, "fillOpacity": 0.1})
-        fields = [k for k in list(fc["features"][0]["properties"].keys())[:6]]
-        folium.GeoJson(
+        st = STYLES.get(kind) or STYLES["flag"]
+        props0 = fc["features"][0]["properties"]
+        fields = [k for k in props0.keys() if all(k in f["properties"] for f in fc["features"])][:6]
+        gj = folium.GeoJson(
             fc,
             name=name,
             style_function=lambda _f, st=st: st,
             tooltip=folium.GeoJsonTooltip(fields=fields) if fields else None,
-            show=name not in ("parcels",),
+            show=kind != "parcels",
         ).add_to(m)
-    folium.Rectangle([[y1, x1], [y2, x2]], color="#000", weight=1, fill=False, name="AOI").add_to(m)
+        try:
+            (sy, sx), (ny, nx) = gj.get_bounds()
+            bounds += [[sy, sx], [ny, nx]]
+        except Exception:
+            pass
+    for (x1, y1, x2, y2), label in rectangles or []:
+        folium.Rectangle([[y1, x1], [y2, x2]], color="#000", weight=1, fill=False, tooltip=label).add_to(m)
+        bounds += [[y1, x1], [y2, x2]]
+    if bbox:
+        x1, y1, x2, y2 = bbox
+        folium.Rectangle([[y1, x1], [y2, x2]], color="#000", weight=1, fill=False, name="AOI").add_to(m)
+        bounds += [[y1, x1], [y2, x2]]
+    for lat, lon, popup in markers or []:
+        folium.Marker([lat, lon], popup=folium.Popup(popup, max_width=400), tooltip=popup.split("<br>")[0]).add_to(m)
+        bounds.append([lat, lon])
+
+    if bounds:
+        lats = [b[0] for b in bounds]
+        lons = [b[1] for b in bounds]
+        if max(lats) - min(lats) < 1e-4 and max(lons) - min(lons) < 1e-4:  # одна точка
+            m.location, m.options["zoom"] = [lats[0], lons[0]], 17
+        else:
+            m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
+    if note_html:
+        m.get_root().html.add_child(folium.Element(note_html))
     folium.LayerControl(collapsed=False).add_to(m)
     m.save(str(path))
+    return path

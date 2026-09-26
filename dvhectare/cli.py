@@ -73,6 +73,8 @@ def main(argv=None) -> int:
     sp = sub.add_parser("agent", help="диалоговый агент на Gemini API")
     sp.add_argument("prompt")
     sp.add_argument("--model", default=None)
+    sp.add_argument("--no-map", action="store_true", help="не строить итоговую карту")
+    sp.add_argument("--no-open", action="store_true", help="не открывать карту в браузере")
 
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
@@ -104,7 +106,15 @@ def main(argv=None) -> int:
             from .agent import run_agent
 
             g = s.gemini
-            print(run_agent(args.prompt, scanner, s.output_dir, model=args.model or g.model, proxy=g.proxy, timeout=g.timeout))
+            print(
+                run_agent(
+                    args.prompt, scanner, s.output_dir,
+                    model=args.model or g.model, proxy=g.proxy, timeout=g.timeout,
+                    # флаги командной строки важнее конфига
+                    make_map=s.agent.make_map and not args.no_map,
+                    open_map=s.agent.open_map and not args.no_open,
+                )
+            )
     return 0
 
 

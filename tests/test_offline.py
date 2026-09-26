@@ -162,6 +162,9 @@ def test_separate_proxies(monkeypatch, tmp_path):
     s = load_settings(cfg)
     assert s.nspd.proxy is None
     assert s.gemini.proxy == "socks5://127.0.0.1:10808" and s.gemini.model == "gemini-3.5-flash-lite"
+    assert s.agent.make_map is True and s.agent.open_map is True  # значения по умолчанию
+    cfg.write_text("agent:\n  open_map: false\n", encoding="utf-8")
+    assert load_settings(cfg).agent.open_map is False
 
     # системный прокси (например, заведённый ради Gemini) НСПД игнорирует
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
@@ -177,3 +180,51 @@ def test_separate_proxies(monkeypatch, tmp_path):
     g = make_client(proxy=s.gemini.proxy)
     mounts = g._api_client._httpx_client._mounts
     assert any(t is not None for t in mounts.values()), "у Gemini должен быть свой прокси"
+
+
+def test_agent_builds_final_map(client, tmp_path):
+    """После ответа агента строится одна карта со всем найденным."""
+    pytest.importorskip("google.genai")
+    pytest.importorskip("folium")
+    from google.genai import types
+
+    from dvhectare.agent import run_agent
+
+    script = [
+        ("get_parcel", {"cad_number": "25:27:000000:2"}),
+        ("what_is_here", {"lat": CENTER[0], "lon": CENTER[1], "layers": ["terr_zones", "zouit"]}),
+        ("scan_for_hectares", {"lat": CENTER[0], "lon": CENTER[1], "radius_km": 0.6}),
+    ]
+
+    class FakeModels:
+        n = 0
+
+        def generate_content(self, model, contents, config):
+            i, FakeModels.n = FakeModels.n, FakeModels.n + 1
+            if i < len(script):
+                name, args = script[i]
+                part = types.Part(function_call=types.FunctionCall(name=name, args=args))
+            else:
+                part = types.Part.from_text(text="Нашёл кандидатов в зоне СХ-1.")
+            return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role="model", parts=[part]))])
+
+    class FakeClient:
+        models = FakeModels()
+
+    out = run_agent("Найди гектар", Scanner(client, Settings(), extra_sources=[]), str(tmp_path), client=FakeClient())
+    assert "Карта:" in out
+    maps = list(tmp_path.glob("agent_*/map.html"))
+    assert len(maps) == 1
+    html = maps[0].read_text(encoding="utf-8")
+    for label in ("Запрошенные участки", "Объекты в точках", "Кандидаты 1 га", "Нашёл кандидатов"):
+        assert label in html or json.dumps(label)[1:-1] in html, label  # folium экранирует кириллицу в JS
+    assert (maps[0].parent / "answer.md").exists()
+
+    # без находок карта не строится
+    class Silent:
+        class models:
+            @staticmethod
+            def generate_content(model, contents, config):
+                return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role="model", parts=[types.Part.from_text(text="Привет")]))])
+
+    assert "Карта:" not in run_agent("Привет", Scanner(client, Settings(), extra_sources=[]), str(tmp_path / "x"), client=Silent())

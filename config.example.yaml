@@ -14,6 +14,10 @@ gemini:
   proxy: null               # прокси ТОЛЬКО для Gemini: http://127.0.0.1:10809 или socks5://127.0.0.1:10808
   timeout: 120
 
+agent:
+  make_map: true            # после ответа агента строить карту out/agent_ДАТА/map.html
+  open_map: true            # сразу открывать карту в браузере (false = только сохранить)
+
 scan:
   max_area_km2: 25          # защита от гигантских сканов
   exclude_layers:           # вырезаются из свободной территории

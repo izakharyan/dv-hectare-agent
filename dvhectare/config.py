@@ -27,6 +27,12 @@ class GeminiSettings:
 
 
 @dataclass
+class AgentSettings:
+    make_map: bool = True            # строить итоговую карту после ответа агента
+    open_map: bool = True            # сразу открывать её в браузере
+
+
+@dataclass
 class HectareSettings:
     side_m: float = 100.0            # 100×100 = 1 га
     inset_m: float = 5.0             # отступ от чужих границ
@@ -77,6 +83,7 @@ class ExtraSource:
 class Settings:
     nspd: NspdSettings = field(default_factory=NspdSettings)
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
+    agent: AgentSettings = field(default_factory=AgentSettings)
     scan: ScanSettings = field(default_factory=ScanSettings)
     parcel_filter: ParcelFilter = field(default_factory=ParcelFilter)
     extra_sources: list[ExtraSource] = field(default_factory=list)

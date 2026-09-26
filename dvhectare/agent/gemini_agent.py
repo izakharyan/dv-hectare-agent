@@ -10,6 +10,7 @@ import logging
 import os
 from typing import Any
 
+from .session_map import SessionMap
 from .tools import TOOL_SCHEMAS, make_handlers
 
 log = logging.getLogger(__name__)
@@ -72,7 +73,30 @@ def run_agent(
     client: Any = None,  # для тестов можно подставить фейковый клиент
     proxy: str | None = None,
     timeout: float = 120.0,
+    make_map: bool = True,
+    open_map: bool = False,
 ) -> str:
+    """Запускает агента. В конце строит карту всего найденного (out/agent_<дата>/map.html)
+    и дописывает путь к ней в ответ. open_map=True — сразу открыть карту в браузере."""
+    sm = SessionMap() if make_map else None
+    try:
+        answer = _loop(prompt, scanner, out_dir, model, max_turns, client, proxy, timeout, sm)
+    except Exception as e:  # карту с тем, что успели найти, всё равно сохраним
+        log.exception("Агент завершился с ошибкой")
+        answer = f"Агент остановился с ошибкой: {type(e).__name__}: {e}"
+    if sm is None:
+        return answer
+    path = sm.save(out_dir, prompt, answer)
+    if path is None:
+        return answer
+    if open_map:
+        import webbrowser
+
+        webbrowser.open(path.resolve().as_uri())
+    return f"{answer}\n\nКарта: {path}"
+
+
+def _loop(prompt, scanner, out_dir, model, max_turns, client, proxy, timeout, sm) -> str:
     try:
         from google import genai
         from google.genai import types
@@ -81,7 +105,7 @@ def run_agent(
 
     client = client or make_client(proxy=proxy, timeout=timeout)
     model = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
-    handlers = make_handlers(scanner, out_dir)
+    handlers = make_handlers(scanner, out_dir, session_map=sm)
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
         tools=[types.Tool(function_declarations=_function_declarations(types))],
