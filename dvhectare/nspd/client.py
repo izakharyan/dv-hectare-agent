@@ -29,15 +29,31 @@ from .cache import ResponseCache
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://nspd.gov.ru"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+# Заголовки как у запросов самой карты nspd.gov.ru из Chrome
 DEFAULT_HEADERS = {
-    "accept": "*/*",
-    "accept-language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     "referer": "https://nspd.gov.ru/map?thematic=PKK",
     "origin": "https://nspd.gov.ru",
-    "user-agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-    ),
+    "user-agent": USER_AGENT,
+    "sec-ch-ua": '"Chromium";v="140", "Google Chrome";v="140", "Not?A_Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+}
+PAGE_HEADERS = {  # для «прогрева» — загрузка страницы карты, как при открытии в браузере
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1",
+    "upgrade-insecure-requests": "1",
 }
 
 
@@ -130,6 +146,7 @@ class NspdClient:
                 kwargs["proxy"] = proxy
         self._http = httpx.Client(**kwargs)
         self.request_count = 0
+        self._warmed = False
 
     # ------------------------------------------------------------------ low level
     def close(self) -> None:
@@ -142,6 +159,20 @@ class NspdClient:
 
     def __exit__(self, *exc):
         self.close()
+
+    def warmup(self) -> Optional[httpx.Response]:
+        """Открывает страницу карты, как браузер: сервер выдаёт cookie, без которых защита
+        от ботов может отвечать 403 на запросы к API. Cookie живут в этом клиенте."""
+        self._warmed = True
+        try:
+            self._throttle()
+            r = self._http.get("/map", params={"thematic": "PKK"}, headers=PAGE_HEADERS)
+            self.request_count += 1
+            log.debug("Прогрев НСПД: %s, cookies: %s", r.status_code, list(self._http.cookies.keys()))
+            return r
+        except httpx.HTTPError as e:
+            log.debug("Прогрев НСПД не удался: %s", e)
+            return None
 
     def _throttle(self) -> None:
         wait = self.min_delay - (time.monotonic() - self._last_request)
@@ -166,7 +197,11 @@ class NspdClient:
                 "чтобы не продлевать блокировку. Перезапуск программы снимает паузу."
             )
 
+        if not self._warmed:
+            self.warmup()
+
         last_exc: Optional[Exception] = None
+        rewarmed = False
         for attempt in range(self.retries + 1):
             self._throttle()
             try:
@@ -178,12 +213,22 @@ class NspdClient:
                 time.sleep(2 ** attempt)
                 continue
 
+            if r.status_code == 403 and not rewarmed:
+                # возможно, истекли cookie защиты — получаем заново и пробуем ещё раз
+                rewarmed = True
+                log.info("НСПД ответил 403 — обновляю cookie и повторяю запрос")
+                self.warmup()
+                time.sleep(2)
+                r = self._http.request(method, path, params=params, json=json)
+                self.request_count += 1
             if r.status_code == 403:
                 global _BLOCKED_UNTIL
                 _BLOCKED_UNTIL = time.monotonic() + self.block_cooldown
                 log.warning("НСПД 403 на %s, ответ: %s", path, r.text[:300].replace("\n", " "))
+                snippet = " ".join(r.text[:160].split())
                 raise BlockedIP(
-                    f"НСПД ответил 403 ({_describe_403(r)}). Обычно это временная блокировка IP за частые "
+                    f"НСПД ответил 403 ({_describe_403(r)}; ответ сервера: «{snippet}»). "
+                    "Обычно это временная блокировка IP за частые "
                     "запросы — подождите 30–60 минут — либо запрос ушёл через VPN с зарубежного IP. "
                     f"Новые запросы к НСПД приостановлены на {int(self.block_cooldown // 60)} мин."
                 )

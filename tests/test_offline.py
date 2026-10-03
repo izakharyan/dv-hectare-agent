@@ -629,10 +629,11 @@ def test_nspd_403_pauses_requests_and_stops_agent(tmp_path):
     with pytest.raises(BlockedIP) as e1:
         c.find_parcel("25:27:000000:2")
     assert "защита от ботов" in str(e1.value) and "30–60 минут" in str(e1.value)
-    assert blocked_seconds_left() > 500
+    assert blocked_seconds_left() > 500 and "Access denied" in str(e1.value)
+    n = len(hits)  # прогрев + запрос + повторный прогрев + повтор
     with pytest.raises(BlockedIP) as e2:
         c.find_parcel("25:27:000000:3")
-    assert "приостановлены" in str(e2.value) and len(hits) == 1  # второй раз в сеть не ходили
+    assert "приостановлены" in str(e2.value) and len(hits) == n  # второй раз в сеть не ходили
 
     calls = []
 
@@ -647,3 +648,21 @@ def test_nspd_403_pauses_requests_and_stops_agent(tmp_path):
     ans = conv.ask("что за участок?", Scanner(c, Settings(), extra_sources=[]), str(tmp_path), client=Cl(), model="m")
     assert ans.startswith("Не удалось получить данные") and len(calls) == 1  # модель не гоняли по кругу
     assert [x.role for x in conv.contents] == ["user", "model", "user", "model"]  # история корректна
+
+
+def test_nspd_warmup_cookie_passes_bot_protection(fake):
+    """Защита от ботов: API отвечает 403 без cookie со страницы карты — клиент сначала «прогревается»."""
+    def handler(request):
+        if request.url.path == "/map":
+            return httpx.Response(200, text="<html>map</html>", headers={"set-cookie": "spid=ok; Path=/"})
+        if "spid=ok" not in request.headers.get("cookie", ""):
+            return httpx.Response(403, text="<html>bot check</html>")
+        assert request.headers["sec-fetch-mode"] == "cors" and "Chrome" in request.headers["user-agent"]
+        return fake.handler(request)
+
+    c = NspdClient(min_delay=0, cache_path=None, transport=httpx.MockTransport(handler))
+    assert c.find_parcel("25:27:000000:2")["properties"]["options"]["specified_area"] == 5000
+
+    # cookie «протухли» посреди работы — клиент сам получает их заново
+    c._http.cookies.clear()
+    assert c.find_parcel("25:27:000000:2") is not None

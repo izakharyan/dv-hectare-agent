@@ -44,6 +44,69 @@ def _bbox(args):
     raise SystemExit("Укажите --bbox lon1,lat1,lon2,lat2 или --center lat,lon [--radius-km N]")
 
 
+def diagnose(s, out=print) -> list[str]:
+    """Проверка связи с НСПД так же, как ходит программа: DNS, внешний IP, страница карты, API."""
+    import os
+    import socket
+
+    import httpx
+
+    from .nspd.client import BASE_URL, DEFAULT_HEADERS, NspdClient, blocked_seconds_left
+
+    lines: list[str] = []
+
+    def say(msg: str) -> None:
+        lines.append(msg)
+        out(msg)
+
+    say(f"Прокси для НСПД в config.yaml: {s.nspd.proxy or 'нет (напрямую)'}")
+    env = {k: v for k, v in os.environ.items() if k.lower() in ("http_proxy", "https_proxy", "all_proxy")}
+    say(f"Системные переменные прокси: {env or 'нет'} (клиент НСПД их игнорирует)")
+    try:
+        say("DNS nspd.gov.ru: " + ", ".join(sorted(set(socket.gethostbyname_ex('nspd.gov.ru')[2]))))
+    except Exception as e:
+        say(f"DNS nspd.gov.ru: ОШИБКА {e}")
+
+    kw = dict(timeout=10, trust_env=False, headers={"user-agent": DEFAULT_HEADERS["user-agent"]})
+    if s.nspd.proxy:
+        kw["proxy"] = s.nspd.proxy
+    country = None
+    try:
+        with httpx.Client(**kw) as h:
+            info = h.get("https://ipinfo.io/json").json()
+        country = info.get("country")
+        say(f"Внешний IP для прочих сайтов (ipinfo.io): {info.get('ip')} · {country} · {info.get('org', '')}")
+    except Exception as e:
+        say(f"Внешний IP: не удалось узнать ({type(e).__name__})")
+
+    say(f"Пауза после 403 в этом запуске: {blocked_seconds_left()} с")
+    c = NspdClient(timeout=s.nspd.timeout, min_delay=1.0, retries=0, cache_path=None,
+                   ca_bundle=s.nspd.ca_bundle, proxy=s.nspd.proxy)
+    try:
+        r = c.warmup()
+        if r is None:
+            say("Страница карты: нет соединения (таймаут / сеть)")
+        else:
+            say(f"Страница карты {BASE_URL}/map: {r.status_code} · server={r.headers.get('server', '?')} · "
+                f"cookies: {', '.join(c._http.cookies.keys()) or 'нет'}")
+        try:
+            r2 = c._http.get("/api/geoportal/v2/search/geoportal",
+                             params={"thematicSearchId": 1, "query": "25:28:010013:31"})
+            say(f"API поиска: {r2.status_code} · {r2.headers.get('content-type', '?')}")
+            say("  ответ: " + " ".join(r2.text[:400].split()))
+            if r2.status_code == 200:
+                say("✓ НСПД отвечает программе нормально.")
+                if country and country != "RU":
+                    say("  (прочие сайты идут через VPN, а НСПД — напрямую по правилу маршрутизации: так и должно быть)")
+            elif country and country != "RU":
+                say("  ⚠ Внешний IP не российский — вероятно, и НСПД идёт через VPN. Проверьте правило маршрутизации.")
+        except Exception as e:
+            say(f"API поиска: ОШИБКА {type(e).__name__}: {e}")
+    finally:
+        c.close()
+    return lines
+
+
 def _print(obj) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
@@ -71,6 +134,8 @@ def main(argv=None) -> int:
             sp.add_argument("--zone", action="append", default=None, help="регулярка по названию зоны (можно несколько)")
             sp.add_argument("--no-html", action="store_true")
 
+    sub.add_parser("diag", help="проверить связь с НСПД (IP, страница карты, API) и сохранить отчёт в diag.txt")
+
     sp = sub.add_parser("agent", help="диалоговый агент на Gemini API")
     sp.add_argument("prompt")
     sp.add_argument("--model", default=None)
@@ -80,6 +145,13 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
     s = load_settings(args.config)
+    if args.cmd == "diag":
+        from pathlib import Path
+
+        lines = diagnose(s)
+        Path("diag.txt").write_text("\n".join(lines), encoding="utf-8")
+        print("\nОтчёт сохранён в diag.txt")
+        return 0
 
     with _client(s) as client:
         scanner = Scanner(client, s)
