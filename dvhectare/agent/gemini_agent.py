@@ -27,6 +27,8 @@ SYSTEM_PROMPT = """Ты — ассистент по подбору земли п
 - scan_for_hectares — дорогой; начинай с радиуса 0.5–1 км, расширяй только по просьбе.
 - Объясняй результат: сколько свободной территории, лучшие кандидаты (координаты + ссылка НСПД),
   в какой они территориальной зоне и какие флаги (ЗОУИТ, лесничество, НП, водоохрана) требуют проверки.
+- Если инструмент вернул ошибку BlockedIP / 403 от НСПД — НЕ вызывай инструменты повторно,
+  сразу сообщи пользователю текст ошибки и что делать.
 - Всегда напоминай, что окончательную проверку делает уполномоченный орган на надальнийвосток.рф,
   а участки без границ в ЕГРН на карте не видны.
 Отвечай по-русски, кратко и по делу."""
@@ -253,16 +255,26 @@ def _loop(contents, scanner, out_dir, chain, max_turns, client, proxy, timeout, 
         if not calls:
             return resp.text or "", chain[0]
 
+        from ..nspd.client import BlockedIP
+
         parts = []
+        blocked: BlockedIP | None = None
         for fc in calls:
             args = dict(fc.args or {})
             log.info("→ %s %s", fc.name, args)
             try:
                 result = _json_safe(handlers[fc.name](**args))
-            except Exception as e:  # ошибку отдаём модели, пусть решит, что делать
+            except BlockedIP as e:  # НСПД заблокировал — дальше крутить агента бессмысленно (и вредно)
+                blocked = e
+                result = {"error": f"BlockedIP: {e}"}
+            except Exception as e:  # остальные ошибки отдаём модели, пусть решит, что делать
                 result = {"error": f"{type(e).__name__}: {e}"}
             parts.append(types.Part.from_function_response(name=fc.name, response=result))
         contents.append(types.Content(role="user", parts=parts))
+        if blocked is not None:
+            text = f"Не удалось получить данные: {blocked}"
+            contents.append(types.Content(role="model", parts=[types.Part.from_text(text=text)]))
+            return text, chain[0]
 
     text = "Достигнут лимит шагов агента."
     contents.append(types.Content(role="model", parts=[types.Part.from_text(text=text)]))

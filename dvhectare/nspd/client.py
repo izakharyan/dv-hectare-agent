@@ -49,6 +49,31 @@ class BlockedIP(NspdError):
     """403 — IP заблокирован или не российский."""
 
 
+# После 403 НСПД держит блокировку какое-то время. Чтобы не продлевать бан новыми запросами
+# (агент любит повторять), весь процесс «остывает» и в сеть не ходит до этого момента.
+_BLOCKED_UNTIL = 0.0
+
+
+def blocked_seconds_left() -> int:
+    return max(0, int(_BLOCKED_UNTIL - time.monotonic()))
+
+
+def reset_block() -> None:
+    global _BLOCKED_UNTIL
+    _BLOCKED_UNTIL = 0.0
+
+
+def _describe_403(r: httpx.Response) -> str:
+    body = r.text[:400].lower()
+    if any(w in body for w in ("captcha", "challenge", "javascript", "qrator", "servicepipe", "variti", "ddos")):
+        kind = "сработала защита от ботов (страница-проверка вместо данных)"
+    elif "<html" in body:
+        kind = "сервер вернул HTML-страницу запрета"
+    else:
+        kind = "доступ запрещён"
+    return kind
+
+
 class TooBigContour(NspdError):
     """НСПД отказался обрабатывать контур — надо дробить."""
 
@@ -74,7 +99,8 @@ class NspdClient:
         self,
         *,
         timeout: float = 20.0,
-        min_delay: float = 1.0,
+        min_delay: float = 1.5,
+        block_cooldown: float = 30 * 60,
         retries: int = 3,
         cache_path: Optional[str] = ".cache/nspd.sqlite",
         cache_ttl: int = 7 * 24 * 3600,
@@ -83,6 +109,7 @@ class NspdClient:
         transport: Optional[httpx.BaseTransport] = None,  # для тестов
     ):
         self.min_delay = min_delay
+        self.block_cooldown = block_cooldown
         self.retries = retries
         self._last_request = 0.0
         self.cache = ResponseCache(cache_path, cache_ttl) if cache_path else None
@@ -132,6 +159,13 @@ class NspdClient:
             if cached is not None:
                 return cached
 
+        left = blocked_seconds_left()
+        if left:
+            raise BlockedIP(
+                f"НСПД недавно ответил 403 — запросы приостановлены ещё на {left // 60 + 1} мин, "
+                "чтобы не продлевать блокировку. Перезапуск программы снимает паузу."
+            )
+
         last_exc: Optional[Exception] = None
         for attempt in range(self.retries + 1):
             self._throttle()
@@ -145,7 +179,14 @@ class NspdClient:
                 continue
 
             if r.status_code == 403:
-                raise BlockedIP("403 от НСПД: IP заблокирован или не из РФ. Нужен российский IP/прокси.")
+                global _BLOCKED_UNTIL
+                _BLOCKED_UNTIL = time.monotonic() + self.block_cooldown
+                log.warning("НСПД 403 на %s, ответ: %s", path, r.text[:300].replace("\n", " "))
+                raise BlockedIP(
+                    f"НСПД ответил 403 ({_describe_403(r)}). Обычно это временная блокировка IP за частые "
+                    "запросы — подождите 30–60 минут — либо запрос ушёл через VPN с зарубежного IP. "
+                    f"Новые запросы к НСПД приостановлены на {int(self.block_cooldown // 60)} мин."
+                )
             if r.status_code == 404:
                 raise NotFound(path)
             if r.status_code == 429 or r.status_code >= 500:

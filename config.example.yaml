@@ -2,7 +2,8 @@
 
 nspd:
   timeout: 20
-  min_delay: 1.0            # пауза между запросами к НСПД, сек. Меньше 0.5 — риск бана IP
+  min_delay: 1.5            # пауза между запросами к НСПД, сек. Меньше 1 — риск бана IP (403)
+  block_cooldown_min: 30    # после 403 не обращаться к НСПД столько минут, чтобы не продлевать бан
   retries: 3
   cache_path: .cache/nspd.sqlite
   cache_ttl_days: 7

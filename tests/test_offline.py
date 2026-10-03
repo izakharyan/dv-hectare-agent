@@ -17,6 +17,16 @@ from dvhectare.nspd.client import NspdClient
 from .fake_nspd import AOI, CENTER, FakeNspd
 
 
+@pytest.fixture(autouse=True)
+def _no_nspd_block():
+    """Пауза после 403 — общая на процесс; не даём ей протекать между тестами."""
+    from dvhectare.nspd.client import reset_block
+
+    reset_block()
+    yield
+    reset_block()
+
+
 @pytest.fixture
 def fake():
     return FakeNspd()
@@ -599,3 +609,41 @@ def test_history_restores_agent_context(client, tmp_path):
     assert conv.ask("А о чём мы говорили?", sc, str(tmp_path), client=C(), model="m").startswith("Помню")
     assert "Что за участок 25:27:000000:2?" in seen[-1]  # прошлый вопрос ушёл в контекст
     assert conv.session_map.render(tmp_path / "m.html").exists()
+
+
+def test_nspd_403_pauses_requests_and_stops_agent(tmp_path):
+    """403: понятное сообщение, дальше в сеть не ходим, агент останавливается без лишних шагов."""
+    pytest.importorskip("google.genai")
+    from google.genai import types
+
+    from dvhectare.agent import Conversation
+    from dvhectare.nspd.client import BlockedIP, blocked_seconds_left
+
+    hits = []
+
+    def handler(request):
+        hits.append(request.url.path)
+        return httpx.Response(403, text="<html><body>Access denied. Please enable JavaScript (challenge)</body></html>")
+
+    c = NspdClient(min_delay=0, cache_path=None, block_cooldown=600, transport=httpx.MockTransport(handler))
+    with pytest.raises(BlockedIP) as e1:
+        c.find_parcel("25:27:000000:2")
+    assert "защита от ботов" in str(e1.value) and "30–60 минут" in str(e1.value)
+    assert blocked_seconds_left() > 500
+    with pytest.raises(BlockedIP) as e2:
+        c.find_parcel("25:27:000000:3")
+    assert "приостановлены" in str(e2.value) and len(hits) == 1  # второй раз в сеть не ходили
+
+    calls = []
+
+    class M:
+        def generate_content(self, model, contents, config):
+            calls.append(1)
+            return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role="model", parts=[
+                types.Part(function_call=types.FunctionCall(name="get_parcel", args={"cad_number": "25:27:000000:2"}))]))])
+
+    class Cl: models = M()
+    conv = Conversation()
+    ans = conv.ask("что за участок?", Scanner(c, Settings(), extra_sources=[]), str(tmp_path), client=Cl(), model="m")
+    assert ans.startswith("Не удалось получить данные") and len(calls) == 1  # модель не гоняли по кругу
+    assert [x.role for x in conv.contents] == ["user", "model", "user", "model"]  # история корректна

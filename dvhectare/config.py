@@ -11,7 +11,8 @@ import yaml
 @dataclass
 class NspdSettings:
     timeout: float = 20.0
-    min_delay: float = 1.0          # пауза между запросами, сек
+    min_delay: float = 1.5          # пауза между запросами, сек
+    block_cooldown_min: float = 30  # после 403 не обращаться к НСПД столько минут (не продлевать бан)
     retries: int = 3
     cache_path: Optional[str] = ".cache/nspd.sqlite"
     cache_ttl_days: int = 7
