@@ -52,7 +52,8 @@ def scan_layers(res: ScanResult) -> dict[str, dict]:
     """Все слои скана как FeatureCollection (для GeoJSON/GPKG/карты)."""
     layers: dict[str, dict] = {
         "candidates": _fc(
-            {"type": "Feature", "geometry": mapping(c.geometry), "properties": {**c.as_dict(), "zones": "; ".join(c.zones), "flags": "; ".join(c.flags), "zone_permitted_uses": "; ".join(c.zone_permitted_uses)}}
+            {"type": "Feature", "geometry": mapping(c.geometry), "properties": {**c.as_dict(), "zones": "; ".join(c.zones), "flags": "; ".join(c.flags), "zone_permitted_uses": "; ".join(c.zone_permitted_uses),
+                                                                                 "corners": "; ".join(f"{la}, {lo}" for la, lo in c.corners())}}
             for c in res.candidates
         ),
         "free_area": _fc([{"type": "Feature", "geometry": mapping(res.free_area), "properties": {}}] if not res.free_area.is_empty else []),
@@ -121,6 +122,90 @@ STYLES: dict[str, dict] = {
 }
 
 
+POPUP_JS = r"""
+<style>
+  .dv-pop { font: 13px/1.4 "Segoe UI", system-ui, sans-serif; min-width: 230px; }
+  .dv-pop h4 { margin: 0 0 6px; font-size: 14px; }
+  .dv-pop .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 8px; background: #e8f5e9; color: #2e7d32; margin-bottom: 6px; }
+  .dv-pop .tag.muted { background: #eef1f5; color: #4b5563; }
+  .dv-pop .cn { display: flex; align-items: center; gap: 6px; margin: 2px 0 6px; }
+  .dv-pop .cn code { font: 600 14px Consolas, monospace; }
+  .dv-pop button { font: 12px "Segoe UI", sans-serif; border: 1px solid #c5cbd3; background: #fff; border-radius: 5px; padding: 2px 8px; cursor: pointer; }
+  .dv-pop button:hover { background: #eef1f5; }
+  .dv-pop button.ok { border-color: #2e7d32; color: #2e7d32; }
+  .dv-pop table { border-collapse: collapse; margin-top: 4px; }
+  .dv-pop td { padding: 1px 6px 1px 0; vertical-align: top; }
+  .dv-pop td:first-child { color: #6b7280; white-space: nowrap; }
+  .dv-pop a { color: #1565c0; }
+</style>
+<script>
+(function () {
+  var LABELS = {
+    permitted_use: "ВРИ", category: "Категория", area_m2: "Площадь, м²", ownership: "Собственность",
+    status: "Статус", address: "Адрес", cost_rub: "Кад. стоимость, ₽", zones: "Терзона",
+    flags: "Проверить", zone_permitted_uses: "ВРИ зоны", permitted_uses: "ВРИ зоны", title: "Название"
+  };
+  function esc(v) { return String(v).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
+
+  window.dvCopy = function (btn) {
+    var text = btn.getAttribute("data-copy");
+    function done() { var t = btn.textContent; btn.textContent = "Скопировано ✓"; btn.classList.add("ok");
+                      setTimeout(function () { btn.textContent = t; btn.classList.remove("ok"); }, 1500); }
+    function legacy() {
+      var ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { prompt("Скопируйте вручную:", text); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, legacy);
+    else legacy();
+  };
+
+  function copyRow(label, value) {
+    return '<div class="cn"><span>' + label + '</span><code>' + esc(value) + '</code>' +
+           '<button data-copy="' + esc(value) + '" onclick="dvCopy(this)">Копировать</button></div>';
+  }
+  function table(p, keys) {
+    var rows = keys.filter(function (k) { return p[k] !== undefined && p[k] !== null && p[k] !== "" && p[k] !== "None"; })
+      .map(function (k) { var v = String(p[k]); if (v.length > 300) v = v.slice(0, 300) + "…";
+                          return "<tr><td>" + (LABELS[k] || k) + "</td><td>" + esc(v) + "</td></tr>"; });
+    return rows.length ? "<table>" + rows.join("") + "</table>" : "";
+  }
+
+  window.dvBind = function (f, layer, kind, layerName) {
+    var p = f.properties || {}, html, tip;
+    if (kind === "candidates") {
+      tip = "Кандидат #" + p.id;
+      html = "<h4>Кандидат #" + esc(p.id) + " · 1 га</h4>" +
+             '<span class="tag">Свободная территория — участка в ЕГРН ещё нет</span>' +
+             (p.quarter ? copyRow("Квартал:", p.quarter) : "") +
+             copyRow("Центр:", p.lat + ", " + p.lon) +
+             '<div class="cn"><span>Углы:</span><button data-copy="' + esc(p.corners || "") + '" onclick="dvCopy(this)">Копировать координаты углов</button></div>' +
+             table(p, ["zones", "flags", "zone_permitted_uses"]) +
+             (p.nspd_link ? '<div><a href="' + esc(p.nspd_link) + '" target="_blank">Открыть на карте НСПД</a></div>' : "");
+    } else if (p.cad_num) {
+      var free = kind === "free_parcels_filtered";
+      tip = p.cad_num;
+      html = "<h4>Земельный участок</h4>" +
+             '<span class="tag' + (free ? "" : " muted") + '">' + (free ? "Свободен от прав третьих лиц" : esc(layerName)) + "</span>" +
+             copyRow("КН:", p.cad_num) +
+             table(p, ["permitted_use", "category", "area_m2", "ownership", "status", "address", "cost_rub"]);
+    } else if (p.title || p.reg_numb_border) {
+      tip = p.title || p.reg_numb_border;
+      html = "<h4>" + esc(layerName) + "</h4>" +
+             (p.reg_numb_border ? copyRow("Реестровый №:", p.reg_numb_border) : "") +
+             table(p, ["title", "permitted_uses"]);
+    } else {
+      return;
+    }
+    layer.bindTooltip(esc(tip), {sticky: true});
+    layer.bindPopup('<div class="dv-pop">' + html + "</div>", {maxWidth: 380});
+  };
+})();
+</script>
+"""
+
+
 def render_map(
     layers: list[tuple[str, str, dict]],
     path: Path,
@@ -145,13 +230,12 @@ def render_map(
         if not fc["features"]:
             continue
         st = STYLES.get(kind) or STYLES["flag"]
-        props0 = fc["features"][0]["properties"]
-        fields = [k for k in props0.keys() if all(k in f["properties"] for f in fc["features"])][:6]
         gj = folium.GeoJson(
             fc,
             name=name,
             style_function=lambda _f, st=st: st,
-            tooltip=folium.GeoJsonTooltip(fields=fields) if fields else None,
+            # подпись при наведении + карточка по клику с кнопками «Копировать» (см. POPUP_JS)
+            on_each_feature=folium.JsCode(f"function(f, l) {{ dvBind(f, l, {json.dumps(kind)}, {json.dumps(name)}); }}"),
             show=kind != "parcels",
         ).add_to(m)
         try:
@@ -177,6 +261,7 @@ def render_map(
             m.location, m.options["zoom"] = [lats[0], lons[0]], 17
         else:
             m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
+    m.get_root().header.add_child(folium.Element(POPUP_JS))
     if note_html:
         m.get_root().html.add_child(folium.Element(note_html))
     folium.LayerControl(collapsed=False).add_to(m)

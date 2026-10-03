@@ -108,6 +108,11 @@ class Candidate:
     zones: list[str] = field(default_factory=list)
     zone_permitted_uses: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    quarter: Optional[str] = None  # кадастровый квартал — нужен при подаче схемы на ДВ-гектар
+
+    def corners(self) -> list[tuple[float, float]]:
+        """Углы квадрата (широта, долгота) по часовой стрелке."""
+        return [(round(y, 6), round(x, 6)) for x, y in list(self.geometry.exterior.coords)[:-1]]
 
     def as_dict(self) -> dict:
         return {
@@ -118,6 +123,7 @@ class Candidate:
             "zones": self.zones,
             "zone_permitted_uses": self.zone_permitted_uses[:15],
             "flags": self.flags,
+            "quarter": self.quarter,
             "nspd_link": nspd_map_link(self.lat, self.lon),
         }
 
@@ -227,6 +233,8 @@ class Scanner:
             if len(cells) >= h.max_cells:
                 break
 
+        quarter_index = _Index([(feature_options(f).get("cad_num") or zone_title(f), feature_geometry(f), [])
+                                for f in self.fetch_layer("quarters", bbox)])
         zone_index = _Index([(f["properties"]["_title"], feature_geometry(f), f["properties"].get("_permitted_uses") or []) for f in zones])
         flag_items = []
         for key, fs in flags.items():
@@ -253,6 +261,7 @@ class Scanner:
                     zones=ztitles,
                     zone_permitted_uses=uses,
                     flags=[t for t, _ in flag_index.hits(cell)],
+                    quarter=next((t for t, _ in quarter_index.hits(c)), None),
                 )
             )
         # сначала «чистые» кандидаты без флагов

@@ -14,6 +14,7 @@ gemini:
   model: null               # null → gemini-3.8-flash (или переменная GEMINI_MODEL)
   proxy: null               # прокси ТОЛЬКО для Gemini: http://127.0.0.1:10809 или socks5://127.0.0.1:10808
   timeout: 120
+  fallback_models: null     # запасные модели при перегрузке (503): null = [gemini-3.5-flash-lite, gemini-3.1-flash-lite]
 
 agent:
   make_map: true            # после ответа агента строить карту out/agent_ДАТА/map.html

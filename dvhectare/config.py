@@ -25,6 +25,8 @@ class GeminiSettings:
     model: Optional[str] = None      # None → GEMINI_MODEL или gemini-3.8-flash
     proxy: Optional[str] = None      # прокси только для Gemini: http://host:port или socks5://host:port
     timeout: float = 120.0
+    # запасные модели на случай перегрузки (503/429); null → gemini-3.5-flash-lite, gemini-3.1-flash-lite
+    fallback_models: Optional[list[str]] = None
 
 
 @dataclass

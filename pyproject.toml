@@ -17,13 +17,20 @@ dependencies = [
 [project.optional-dependencies]
 geo = ["geopandas>=0.14", "pyogrio>=0.7", "folium>=0.16"]
 agent = ["google-genai>=2.0"]
+gui = ["pywebview>=6.0"]
 dev = ["pytest>=8"]
 
 [project.scripts]
 dvhectare = "dvhectare.cli:main"
 
+[project.gui-scripts]
+dvhectare-gui = "dvhectare.gui:main"
+
 [tool.setuptools.packages.find]
 include = ["dvhectare*"]
+
+[tool.setuptools.package-data]
+dvhectare = ["gui_static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

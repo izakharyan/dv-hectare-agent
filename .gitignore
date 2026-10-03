@@ -6,3 +6,8 @@ out/
 config.yaml
 *.egg-info/
 .pytest_cache/
+build/
+dist/
+*.spec
+gui_state.json
+history/

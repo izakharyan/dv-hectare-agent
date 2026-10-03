@@ -41,7 +41,8 @@ class SessionMap:
         props = {k: ("" if v is None else str(v)) for k, v in r.items()}
         self._add("Запрошенные участки", "parcel_focus", {"type": "Feature", "geometry": mapping(g), "properties": props})
         c = g.representative_point()
-        self.markers.append((c.y, c.x, f"<b>{html.escape(r.get('cad_num') or '')}</b><br>{html.escape(r.get('permitted_use') or '')}<br>{r.get('area_m2') or ''} м²"))
+        # метка с той же карточкой и кнопкой «Копировать» КН
+        self._add("Запрошенные участки", "parcel_focus", {"type": "Feature", "geometry": {"type": "Point", "coordinates": [c.x, c.y]}, "properties": props})
 
     def add_point(self, lat: float, lon: float, found: dict[str, list], raw: dict[str, list[dict]]) -> None:
         lines = [f"<b>Точка {lat:.5f}, {lon:.5f}</b>"]
@@ -69,12 +70,20 @@ class SessionMap:
             "free_parcels_filtered": "Свободные от прав (фильтр)",
             "terr_zones": "Территориальные зоны",
         }
-        for name, fc in scan_layers(res).items():
+        layers = scan_layers(res)
+        for name, fc in layers.items():
             label = names.get(name) or name.replace("excl_", "Исключено: ").replace("flag_", "Проверить: ")
             self.layers.append((prefix + label, layer_kind(name), fc))
         self.rectangles.append((res.bbox, f"{prefix}область скана"))
-        for c in res.candidates[:10]:
-            self.markers.append((c.lat, c.lon, f"<b>Кандидат #{c.id}</b><br>{html.escape('; '.join(c.zones) or 'зона не определена')}<br>{html.escape('; '.join(c.flags) or 'без флагов')}"))
+        # метки на 10 лучших кандидатах — с той же карточкой (квартал, координаты, «Копировать»),
+        # что и у квадратов: метка лежит поверх квадрата и перехватывает клик
+        pins = [
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [f["properties"]["lon"], f["properties"]["lat"]]},
+             "properties": f["properties"]}
+            for f in layers["candidates"]["features"][:10]
+        ]
+        if pins:
+            self.layers.append((prefix + "Лучшие кандидаты (метки)", "candidates", {"type": "FeatureCollection", "features": pins}))
 
     def _add(self, name: str, kind: str, feature: dict) -> None:
         for n, _, fc in self.layers:
@@ -83,22 +92,51 @@ class SessionMap:
                 return
         self.layers.append((name, kind, {"type": "FeatureCollection", "features": [feature]}))
 
+    # ------------------------------------------------------------ сохранение между запусками
+    def to_dict(self) -> dict:
+        return {
+            "layers": [[n, k, fc] for n, k, fc in self.layers],
+            "markers": [list(m) for m in self.markers],
+            "rectangles": [[list(b), label] for b, label in self.rectangles],
+            "scans": self.scans,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SessionMap":
+        return cls(
+            layers=[(n, k, fc) for n, k, fc in d.get("layers", [])],
+            markers=[tuple(m) for m in d.get("markers", [])],
+            rectangles=[(tuple(b), label) for b, label in d.get("rectangles", [])],
+            scans=d.get("scans", 0),
+        )
+
+    def render(self, path: str | Path) -> Path | None:
+        """Карта всего накопленного в указанный файл (без панели ответа)."""
+        if self.empty:
+            return None
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            return render_map(self.layers, Path(path), markers=self.markers, rectangles=self.rectangles)
+        except ImportError:
+            log.warning("folium не установлен — карта не построена (pip install -e .[geo])")
+            return None
+
     # ------------------------------------------------------------ вывод
-    def save(self, out_dir: str | Path, question: str, answer: str) -> Path | None:
+    def save(self, out_dir: str | Path, question: str, answer: str, note: bool = True) -> Path | None:
         """Сохраняет карту и ответ. None — если на карте нечего показать или нет folium."""
         if self.empty:
             return None
         d = Path(out_dir) / f"agent_{datetime.now():%Y%m%d_%H%M%S}"
         d.mkdir(parents=True, exist_ok=True)
         (d / "answer.md").write_text(f"# Запрос\n\n{question}\n\n# Ответ агента\n\n{answer}\n", encoding="utf-8")
-        note = (
+        note_html = (
             '<div style="position:fixed;bottom:12px;left:12px;z-index:9999;max-width:420px;max-height:45vh;'
             "overflow:auto;background:rgba(255,255,255,.95);padding:10px 12px;border-radius:8px;"
             'box-shadow:0 2px 8px rgba(0,0,0,.3);font:13px/1.4 sans-serif;white-space:pre-wrap">'
             f"<b>{html.escape(question)}</b>\n\n{html.escape(answer)}</div>"
         )
         try:
-            return render_map(self.layers, d / "map.html", markers=self.markers, rectangles=self.rectangles, note_html=note)
+            return render_map(self.layers, d / "map.html", markers=self.markers, rectangles=self.rectangles, note_html=note_html if note else None)
         except ImportError:
             log.warning("folium не установлен — карта не построена (pip install -e .[geo])")
             return None

@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>ДВ-гектар — поиск земли</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1f2328; --muted: #6b7280;
+    --line: #d9dce1; --accent: #1565c0; --accent-hover: #0d47a1; --err: #c62828;
+    --me: #e8f0fb;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif; color: var(--text); background: var(--bg);
+    display: grid; grid-template-columns: 230px 420px 1fr; overflow: hidden;
+  }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+  h1 { font-size: 16px; margin: 0; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 3px; }
+  input, textarea, select {
+    width: 100%; font: inherit; color: inherit; background: #fff;
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+  }
+  input:focus, textarea:focus, select:focus { outline: 2px solid #90caf9; border-color: var(--accent); }
+  .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .keyrow { display: flex; gap: 6px; }
+  .keyrow input { flex: 1; min-width: 0; }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  #feed { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+  #empty { color: var(--muted); margin: auto 0; text-align: center; padding: 0 12px; }
+  .msg { max-width: 100%; }
+  .me {
+    align-self: flex-end; background: var(--me); border-radius: 10px 10px 2px 10px;
+    padding: 8px 12px; white-space: pre-wrap; max-width: 88%;
+  }
+  .bot p { margin: 0 0 8px; }
+  .bot ul { margin: 0 0 8px; padding-left: 20px; }
+  .bot a { color: var(--accent); }
+  .bot .err { color: var(--err); white-space: pre-wrap; }
+  .bot .wait { color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  details { color: var(--muted); margin-bottom: 6px; }
+  summary { cursor: pointer; font-size: 12px; }
+  .log { font: 12px/1.4 Consolas, monospace; white-space: pre-wrap; margin-top: 4px; }
+
+  footer { border-top: 1px solid var(--line); padding: 10px 16px 14px; display: grid; gap: 8px; }
+  textarea { resize: none; height: 76px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row .grow { flex: 1; }
+  button {
+    font: inherit; font-weight: 600; color: #fff; background: var(--accent);
+    border: 0; border-radius: 6px; padding: 8px 20px; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { background: #9db3cf; cursor: default; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 400; padding: 7px 10px; }
+  button.ghost:hover { background: #eef1f5; }
+  button.ghost:disabled { color: var(--muted); background: transparent; }
+  #status { color: var(--muted); font-size: 12px; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid #c5d3e6; border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .8s linear infinite; flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  main { position: relative; min-width: 0; }
+
+  nav { background: #f9fafb; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  nav .top { padding: 14px 12px 8px; }
+  nav .top button { width: 100%; }
+  nav h2 { font-size: 12px; color: var(--muted); font-weight: 600; margin: 6px 12px 4px; text-transform: uppercase; letter-spacing: .04em; }
+  #dialogs { flex: 1; overflow: auto; padding: 0 6px 12px; }
+  .dlg { display: flex; align-items: flex-start; gap: 4px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
+  .dlg:hover { background: #eef1f5; }
+  .dlg.active { background: #e3ecf8; }
+  .dlg .t { flex: 1; min-width: 0; }
+  .dlg .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dlg .when { font-size: 11px; color: var(--muted); }
+  .dlg .del { visibility: hidden; border: 0; background: transparent; color: var(--muted); font-size: 15px; padding: 0 4px; line-height: 1; font-weight: 400; }
+  .dlg:hover .del { visibility: visible; }
+  .dlg .del:hover { color: var(--err); background: transparent; }
+  #nodialogs { color: var(--muted); font-size: 12px; padding: 6px 8px; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #e8eaed; }
+  #placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 24px; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="top"><button id="newdlg">+ Новый диалог</button></div>
+  <h2>История</h2>
+  <div id="dialogs"><div id="nodialogs">Здесь появятся ваши диалоги — они сохраняются между запусками</div></div>
+</nav>
+<aside>
+  <header>
+    <h1>Поиск земли под ДВ-гектар</h1>
+    <div class="settings">
+      <div>
+        <label for="key">Ключ Gemini</label>
+        <div class="keyrow">
+          <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
+          <button id="eye" type="button" class="ghost" title="Показать / скрыть ключ">👁</button>
+        </div>
+      </div>
+      <div>
+        <label for="model">Модель</label>
+        <select id="model"></select>
+      </div>
+    </div>
+    <div class="hint">Ключ сохраняется в config.yaml · получить: aistudio.google.com → Get API key</div>
+  </header>
+
+  <div id="feed">
+    <div id="empty">Опишите, где и что искать. Потом можно уточнять — агент помнит весь диалог:<br>
+      «расширь радиус до 2 км», «подробнее про кандидата №3», «а что севернее?»</div>
+  </div>
+
+  <footer>
+    <textarea id="prompt" placeholder="Запрос к ИИ…"></textarea>
+    <div class="row">
+      <button id="go">Искать</button>
+      <span id="status" class="grow">Ctrl+Enter — отправить</span>
+    </div>
+  </footer>
+</aside>
+
+<main>
+  <div id="placeholder">Здесь появится карта найденных участков</div>
+  <iframe id="map" title="Карта" hidden></iframe>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let since = 0, timer = null, turns = 0, current = null;
+
+function esc(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Мини-markdown для ответа модели: абзацы, списки, **жирный**, ссылки
+function md(text) {
+  const out = [];
+  let list = null;
+  for (const raw of text.split(/\n/)) {
+    const line = esc(raw)
+      .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank">ссылка</a>');
+    const item = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (item) { (list = list || []).push(`<li>${item[1]}</li>`); continue; }
+    if (list) { out.push(`<ul>${list.join("")}</ul>`); list = null; }
+    if (line.trim()) out.push(`<p>${line.replace(/^#+\s*/, "")}</p>`);
+  }
+  if (list) out.push(`<ul>${list.join("")}</ul>`);
+  return out.join("");
+}
+
+function scrollFeed() { $("feed").scrollTop = $("feed").scrollHeight; }
+
+function addMessage(cls, html) {
+  $("empty").hidden = true;
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  el.innerHTML = html;
+  $("feed").appendChild(el);
+  scrollFeed();
+  return el;
+}
+
+function showMap(url) {
+  if (!url) return;
+  $("map").src = url + "?t=" + Date.now();
+  $("map").hidden = false;
+  $("placeholder").hidden = true;
+}
+
+function setBusy(busy, text) {
+  $("go").disabled = busy;
+  $("newdlg").disabled = busy;
+  document.body.classList.toggle("busy", busy);
+  $("status").textContent = text;
+}
+
+let currentId = null;
+
+function fmtDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), now = new Date();
+  const hm = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? "сегодня, " + hm : d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }) + ", " + hm;
+}
+
+function renderDialogs(list) {
+  const box = $("dialogs");
+  box.querySelectorAll(".dlg").forEach((el) => el.remove());
+  $("nodialogs").hidden = list.length > 0;
+  for (const d of list) {
+    const el = document.createElement("div");
+    el.className = "dlg" + (d.id === currentId ? " active" : "");
+    el.innerHTML = `<div class="t"><div class="name">${esc(d.title)}</div><div class="when">${fmtDate(d.updated)} · ${d.turns} ${plural(d.turns, "запрос", "запроса", "запросов")}</div></div>` +
+      '<button class="del" title="Удалить диалог">×</button>';
+    el.addEventListener("click", () => openDialog(d.id));
+    el.querySelector(".del").addEventListener("click", (e) => { e.stopPropagation(); deleteDialog(d.id, d.title); });
+    box.appendChild(el);
+  }
+}
+
+function botHtml(m) {
+  const steps = m.steps && m.steps.length
+    ? `<details><summary>Шаги агента</summary><div class="log">${esc(m.steps.join("\n"))}</div></details>` : "";
+  return steps + (m.error ? `<div class="err">${esc(m.error)}</div>` : md(m.text || ""));
+}
+
+function showDialog(c) {
+  currentId = c.saved ? c.id : null;
+  [...$("feed").querySelectorAll(".msg")].forEach((el) => el.remove());
+  $("empty").hidden = c.messages.length > 0;
+  for (const m of c.messages) addMessage(m.role === "user" ? "me" : "bot", m.role === "user" ? esc(m.text) : botHtml(m));
+  turns = c.turns || 0;
+  if (c.map) showMap(c.map);
+  else { $("map").hidden = true; $("map").removeAttribute("src"); $("placeholder").hidden = false; }
+  $("status").textContent = contextText();
+  document.querySelectorAll(".dlg").forEach((el) => el.classList.remove("active"));
+}
+
+async function openDialog(id) {
+  if ($("go").disabled || id === currentId) return;
+  try {
+    const c = await window.pywebview.api.open_dialog(id);
+    showDialog(c);
+    renderDialogs(await window.pywebview.api.list_dialogs());
+  } catch (e) { $("status").textContent = "Не удалось открыть диалог: " + e; }
+}
+
+async function newDialog() {
+  const r = await window.pywebview.api.new_dialog();
+  if (!r.ok) { $("status").textContent = r.error; return; }
+  showDialog(r.current);
+  renderDialogs(await window.pywebview.api.list_dialogs());
+  $("status").textContent = "Новый диалог";
+  $("prompt").focus();
+}
+
+async function deleteDialog(id, title) {
+  if (!confirm(`Удалить диалог «${title}» вместе с картой?`)) return;
+  const r = await window.pywebview.api.delete_dialog(id);
+  if (!r.ok) { $("status").textContent = r.error; return; }
+  if (r.current) showDialog(r.current);
+  renderDialogs(r.dialogs);
+}
+
+function contextText() {
+  return turns ? `В контексте: ${turns} ${plural(turns, "запрос", "запроса", "запросов")}` : "Ctrl+Enter — отправить";
+}
+function plural(n, a, b, c) {
+  const m10 = n % 10, m100 = n % 100;
+  return m10 === 1 && m100 !== 11 ? a : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? b : c;
+}
+
+async function search() {
+  if ($("go").disabled) return;
+  const prompt = $("prompt").value.trim();
+  const res = await window.pywebview.api.search($("model").value, prompt, $("key").value);
+  if (!res.ok) {
+    $("status").textContent = res.error;
+    if (!$("key").value.trim()) $("key").focus();
+    return;
+  }
+  addMessage("me", esc(prompt));
+  current = addMessage("bot",
+    '<details hidden><summary>Шаги агента</summary><div class="log"></div></details>' +
+    '<div class="wait"><span class="spinner"></span>Ищу… это может занять несколько минут</div>');
+  $("prompt").value = "";
+  since = 0;
+  setBusy(true, "Агент работает…");
+  timer = setInterval(poll, 400);
+}
+
+async function poll() {
+  const r = await window.pywebview.api.poll(since);
+  since = r.next;
+  for (const ev of r.events) {
+    const steps = current.querySelector("details");
+    if (ev.type === "log") {
+      steps.hidden = false;
+      current.querySelector(".log").textContent += ev.text + "\n";
+      scrollFeed();
+    } else if (ev.type === "done" || ev.type === "error") {
+      clearInterval(timer);
+      current.querySelector(".wait").remove();
+      const body = document.createElement("div");
+      body.innerHTML = ev.type === "done" ? md(ev.answer || "") : `<div class="err">${esc(ev.text)}</div>`;
+      current.appendChild(body);
+      if (ev.turns !== undefined) turns = ev.turns;
+      if (ev.map) showMap(ev.map);
+      if (ev.dialog) currentId = ev.dialog.id;
+      if (ev.dialogs) renderDialogs(ev.dialogs);
+      setBusy(false, contextText());
+      scrollFeed();
+      $("prompt").focus();
+    }
+  }
+}
+
+async function init() {
+  const s = await window.pywebview.api.init();
+  const models = s.models.includes(s.model) ? s.models : [s.model, ...s.models];  // своя модель из config.yaml
+  $("model").innerHTML = models.map((m) => `<option>${esc(m)}</option>`).join("");
+  $("model").value = s.model;
+  $("prompt").value = s.prompt;
+  $("key").value = s.api_key || "";
+  showDialog(s.current);
+  renderDialogs(s.dialogs);
+  $("newdlg").addEventListener("click", newDialog);
+  $("eye").addEventListener("click", () => { $("key").type = $("key").type === "password" ? "text" : "password"; });
+  $("go").addEventListener("click", search);
+  $("prompt").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); search(); }
+  });
+  ($("key").value ? $("prompt") : $("key")).focus();
+}
+
+if (window.pywebview && window.pywebview.api && window.pywebview.api.init) init();
+else window.addEventListener("pywebviewready", init);
+</script>
+</body>
+</html>

@@ -109,7 +109,7 @@ def main(argv=None) -> int:
             print(
                 run_agent(
                     args.prompt, scanner, s.output_dir,
-                    model=args.model or g.model, proxy=g.proxy, timeout=g.timeout, api_key=g.api_key,
+                    model=args.model or g.model, proxy=g.proxy, timeout=g.timeout, api_key=g.api_key, fallback_models=g.fallback_models,
                     # флаги командной строки важнее конфига
                     make_map=s.agent.make_map and not args.no_map,
                     open_map=s.agent.open_map and not args.no_open,
