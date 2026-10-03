@@ -29,8 +29,8 @@ SYSTEM_PROMPT = """Ты — ассистент по подбору земли п
 Отвечай по-русски, кратко и по делу."""
 
 
-def make_client(proxy: str | None = None, timeout: float = 120.0):
-    """Клиент Gemini. Ключ берётся из GEMINI_API_KEY (или GOOGLE_API_KEY).
+def make_client(proxy: str | None = None, timeout: float = 120.0, api_key: str | None = None):
+    """Клиент Gemini. Ключ: api_key из config.yaml → иначе GEMINI_API_KEY / GOOGLE_API_KEY.
 
     proxy — отдельный прокси только для Gemini (http://host:port, socks5://host:port).
     Запросы к НСПД он не затрагивает.
@@ -42,7 +42,10 @@ def make_client(proxy: str | None = None, timeout: float = 120.0):
     if proxy:
         http["client_args"] = {"proxy": proxy}
         http["async_client_args"] = {"proxy": proxy}
-    return genai.Client(http_options=types.HttpOptions(**http))
+    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        raise SystemExit("Нет ключа Gemini: укажите gemini.api_key в config.yaml или переменную GEMINI_API_KEY")
+    return genai.Client(api_key=key, http_options=types.HttpOptions(**http))
 
 
 def _function_declarations(types) -> list:
@@ -73,6 +76,7 @@ def run_agent(
     client: Any = None,  # для тестов можно подставить фейковый клиент
     proxy: str | None = None,
     timeout: float = 120.0,
+    api_key: str | None = None,
     make_map: bool = True,
     open_map: bool = False,
 ) -> str:
@@ -80,7 +84,7 @@ def run_agent(
     и дописывает путь к ней в ответ. open_map=True — сразу открыть карту в браузере."""
     sm = SessionMap() if make_map else None
     try:
-        answer = _loop(prompt, scanner, out_dir, model, max_turns, client, proxy, timeout, sm)
+        answer = _loop(prompt, scanner, out_dir, model, max_turns, client, proxy, timeout, sm, api_key)
     except Exception as e:  # карту с тем, что успели найти, всё равно сохраним
         log.exception("Агент завершился с ошибкой")
         answer = f"Агент остановился с ошибкой: {type(e).__name__}: {e}"
@@ -96,14 +100,14 @@ def run_agent(
     return f"{answer}\n\nКарта: {path}"
 
 
-def _loop(prompt, scanner, out_dir, model, max_turns, client, proxy, timeout, sm) -> str:
+def _loop(prompt, scanner, out_dir, model, max_turns, client, proxy, timeout, sm, api_key=None) -> str:
     try:
         from google import genai
         from google.genai import types
     except ImportError as e:
         raise SystemExit('Установите extras: pip install -e ".[agent]"') from e
 
-    client = client or make_client(proxy=proxy, timeout=timeout)
+    client = client or make_client(proxy=proxy, timeout=timeout, api_key=api_key)
     model = model or os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
     handlers = make_handlers(scanner, out_dir, session_map=sm)
     config = types.GenerateContentConfig(

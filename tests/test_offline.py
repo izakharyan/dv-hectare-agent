@@ -176,8 +176,15 @@ def test_separate_proxies(monkeypatch, tmp_path):
     pytest.importorskip("google.genai")
     from dvhectare.agent.gemini_agent import make_client
 
-    monkeypatch.setenv("GEMINI_API_KEY", "test")
-    g = make_client(proxy=s.gemini.proxy)
+    # ключ из конфига, без переменных окружения
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        make_client()
+    cfg.write_text("gemini:\n  api_key: AIza-test\n", encoding="utf-8")
+    assert load_settings(cfg).gemini.api_key == "AIza-test"
+    g = make_client(proxy=s.gemini.proxy, api_key="AIza-test")
+    assert g._api_client.api_key == "AIza-test"
     mounts = g._api_client._httpx_client._mounts
     assert any(t is not None for t in mounts.values()), "у Gemini должен быть свой прокси"
 

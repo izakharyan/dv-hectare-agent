@@ -21,6 +21,7 @@ class NspdSettings:
 
 @dataclass
 class GeminiSettings:
+    api_key: Optional[str] = None    # ключ Gemini; None → переменная GEMINI_API_KEY
     model: Optional[str] = None      # None → GEMINI_MODEL или gemini-3.8-flash
     proxy: Optional[str] = None      # прокси только для Gemini: http://host:port или socks5://host:port
     timeout: float = 120.0

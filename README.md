@@ -32,7 +32,8 @@ python -m dvhectare scan  --bbox 132.16,43.34,132.20,43.36 --zone "^СХ"
 ### Агент на естественном языке (Gemini)
 
 ```powershell
-$env:GEMINI_API_KEY = "..."    # ключ из aistudio.google.com → Get API key
+# ключ из aistudio.google.com → Get API key: впишите в config.yaml (gemini.api_key)
+# или задайте переменной окружения:  $env:GEMINI_API_KEY = "..."
 python -m dvhectare agent "Найди свободные гектары в сельхоз-зонах в 1 км от 43.35, 132.18"
 ```
 После ответа агент строит **одну итоговую карту** со всем, что он нашёл за сессию
