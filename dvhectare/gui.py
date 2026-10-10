@@ -230,6 +230,13 @@ class Api:
             raise RuntimeError("Дождитесь окончания поиска")
         self.dialog = self.store.load(dialog_id)
         self._save_state(dialog=dialog_id)
+        # перерисовываем карту из сохранённых слоёв — старые диалоги получают обновления оформления
+        conv = self.dialog.conversation
+        if conv is not None and not conv.session_map.empty:
+            try:
+                conv.session_map.render(self.store.map_path(dialog_id))
+            except Exception as e:
+                log.debug("Не удалось перерисовать карту диалога: %s", e)
         return self._payload(self.dialog)
 
     def delete_dialog(self, dialog_id: str) -> dict:

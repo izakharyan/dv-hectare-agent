@@ -224,6 +224,22 @@ def render_map(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri", name="Спутник",
     ).add_to(m)
+    # Подписи населённых пунктов поверх и схемы, и спутника. Берём у Esri — тот же сервер, что и
+    # спутниковая подложка, ключ не нужен (подписи CARTO стали требовать API key).
+    # Отдельная панель выше слоёв участков, клики сквозь неё проходят к участкам.
+    # z 640: выше участков и меток (600), ниже подсказок (650) и карточек (700)
+    folium.map.CustomPane("labels", z_index=640, pointer_events=False).add_to(m)
+    esri_ref = "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/{}/MapServer/tile/{{z}}/{{y}}/{{x}}"
+    folium.TileLayer(
+        esri_ref.format("World_Boundaries_and_Places"),
+        attr="Esri", name="Названия населённых пунктов",
+        overlay=True, show=True, max_zoom=19, pane="labels",
+    ).add_to(m)
+    folium.TileLayer(
+        esri_ref.format("World_Transportation"),
+        attr="Esri", name="Дороги и их названия",
+        overlay=True, show=False, max_zoom=19, pane="labels",
+    ).add_to(m)
 
     bounds: list[list[float]] = []
     for name, kind, fc in layers:

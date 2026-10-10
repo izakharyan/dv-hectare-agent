@@ -18,10 +18,13 @@ from .fake_nspd import AOI, CENTER, FakeNspd
 
 
 @pytest.fixture(autouse=True)
-def _no_nspd_block():
-    """Пауза после 403 — общая на процесс; не даём ей протекать между тестами."""
+def _no_nspd_block(monkeypatch):
+    """Пауза после 403 — общая на процесс; не даём ей протекать между тестами.
+    Лимит запросов в минуту в тестах снимаем (фейковый НСПД отвечает мгновенно)."""
+    import dvhectare.nspd.client as nc
     from dvhectare.nspd.client import reset_block
 
+    monkeypatch.setattr(nc, "DEFAULT_MAX_PER_MINUTE", 10**6)
     reset_block()
     yield
     reset_block()
@@ -666,3 +669,94 @@ def test_nspd_warmup_cookie_passes_bot_protection(fake):
     # cookie «протухли» посреди работы — клиент сам получает их заново
     c._http.cookies.clear()
     assert c.find_parcel("25:27:000000:2") is not None
+
+
+def test_map_has_place_names_overlay(client, tmp_path):
+    """На карте слой подписей населённых пунктов поверх схемы/спутника, не перехватывающий клики."""
+    pytest.importorskip("folium")
+    out = save_scan(Scanner(client, Settings(), extra_sources=[]).scan(AOI), tmp_path, gpkg=False, html=True)
+    html = (out / "map.html").read_text(encoding="utf-8")
+    assert "World_Boundaries_and_Places" in html and '"pane": "labels"' in html
+    assert "cartocdn" not in html  # CARTO требует API key — не используем
+    assert "pointerEvents" in html or "pointer-events" in html.lower() or "pointer_events" in html.lower()
+
+
+def test_open_dialog_rerenders_old_map(client, tmp_path):
+    """Старый диалог при открытии получает карту в актуальном оформлении (без CARTO, с подписями Esri)."""
+    pytest.importorskip("google.genai")
+    pytest.importorskip("folium")
+    from dvhectare import gui
+    from dvhectare.agent import Conversation
+    from dvhectare.history import Dialog, DialogStore
+
+    store = DialogStore(tmp_path / "history")
+    d = Dialog(conversation=Conversation(), title="старый", messages=[{"role": "user", "text": "x"}, {"role": "bot", "text": "y"}])
+    d.conversation.session_map.add_scan(Scanner(client, Settings(), extra_sources=[]).scan(AOI))
+    store.save(d)
+    store.map_path(d.id).write_text("<html>cartocdn старая карта</html>", encoding="utf-8")
+
+    api = gui.Api(tmp_path, search_fn=None)
+    payload = api.open_dialog(d.id)
+    html = store.map_path(d.id).read_text(encoding="utf-8")
+    assert payload["map"] and "World_Boundaries_and_Places" in html and "cartocdn" not in html
+    api.cleanup()
+
+
+def test_nspd_request_economy(tmp_path, monkeypatch):
+    """Меньше запросов к НСПД: слои группой, тайлы в кэше, «слишком большой контур» запоминается."""
+    import dvhectare.nspd.client as nc
+    from dvhectare.geo import bbox_around
+
+    cache = str(tmp_path / "c.sqlite")
+
+    def scan(bbox, max_area=1.0, **cfg):
+        nc.reset_block()
+        f = FakeNspd(max_area_deg2=max_area)
+        c = NspdClient(min_delay=0, cache_path=cache, transport=httpx.MockTransport(f.handler))
+        s = Settings()
+        for k, v in cfg.items():
+            setattr(s.scan, k, v)
+        r = Scanner(c, s, extra_sources=[]).scan(bbox)
+        c.close()
+        return r, f.calls
+
+    old, _ = scan(AOI, combine_layers=False, tile_deg=0, context_tile_deg=0)
+    (tmp_path / "c.sqlite").unlink()
+    new, calls = scan(AOI)
+    assert new.stats["nspd_requests"] < old.stats["nspd_requests"]
+    assert len(new.candidates) == len(old.candidates)  # результат тот же
+    assert calls.count("/api/geoportal/v1/tab-values-data") <= 2  # ВРИ — только зон с кандидатами
+
+    again, calls2 = scan(AOI)
+    assert again.stats["nspd_requests"] == 0 and calls2 == []  # повтор — целиком из кэша
+
+    # «слишком большой контур» запоминается: при повторе сразу дробим, не спрашивая НСПД
+    (tmp_path / "c.sqlite").unlink()
+    first, _ = scan(AOI, max_area=4e-4, context_tile_deg=0.02)
+    second, calls3 = scan(AOI, max_area=4e-4, context_tile_deg=0.02)
+    assert first.stats["nspd_requests"] > 0 and calls3 == []
+    near, _ = scan(bbox_around(CENTER[0] + 0.002, CENTER[1] + 0.002, 0.6))
+    assert near.stats["nspd_from_cache"] > 0  # соседний скан переиспользует тайлы
+
+
+def test_nspd_rate_limit_per_minute(monkeypatch, fake):
+    """Не больше N запросов в минуту на всю программу — лишние ждут."""
+    import dvhectare.nspd.client as nc
+
+    waits = []
+    monkeypatch.setattr(nc.time, "sleep", lambda s: waits.append(s))
+    c = NspdClient(min_delay=0, max_per_minute=3, cache_path=None, transport=httpx.MockTransport(fake.handler))
+    for i in range(2):  # прогрев + 2 запроса = 3
+        c.search(f"25:27:000000:{i}")
+    assert not any(w > 30 for w in waits)
+    c.search("25:27:000000:9")  # 4-й в ту же минуту
+    assert any(w > 50 for w in waits)
+
+
+def test_agent_scan_limit_per_request(client, tmp_path):
+    from dvhectare.agent.tools import MAX_SCANS_PER_REQUEST, make_handlers
+
+    h = make_handlers(Scanner(client, Settings(), extra_sources=[]), str(tmp_path))
+    for _ in range(MAX_SCANS_PER_REQUEST):
+        assert "error" not in h["scan_for_hectares"](*CENTER, radius_km=0.6)
+    assert "Лимит" in h["scan_for_hectares"](*CENTER, radius_km=0.6)["error"]

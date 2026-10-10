@@ -61,10 +61,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+MAX_SCANS_PER_REQUEST = 2   # сканов за один вопрос пользователя
+MAX_SCAN_RADIUS_KM = 2.0    # радиус одного скана
+
+
 def make_handlers(scanner: Scanner, out_dir: str, session_map: Any = None) -> dict[str, Callable[..., Any]]:
     """session_map (SessionMap) — если передан, всё найденное попадёт на итоговую карту агента."""
     client = scanner.client
     sm = session_map
+    scans_done: list[tuple] = []  # сканы за этот запрос пользователя (handlers создаются заново на каждый)
 
     def get_parcel(cad_number: str) -> dict:
         f = client.find_parcel(cad_number)
@@ -108,6 +113,11 @@ def make_handlers(scanner: Scanner, out_dir: str, session_map: Any = None) -> di
         }
 
     def scan_for_hectares(lat: float, lon: float, radius_km: float = 1, allowed_zone_patterns: list[str] | None = None) -> dict:
+        if len(scans_done) >= MAX_SCANS_PER_REQUEST:
+            return {"error": f"Лимит: не больше {MAX_SCANS_PER_REQUEST} сканов за один запрос пользователя — "
+                             "иначе НСПД блокирует IP за частые запросы. Ответь по уже полученным данным."}
+        radius_km = min(float(radius_km), MAX_SCAN_RADIUS_KM)
+        scans_done.append((lat, lon, radius_km))
         if allowed_zone_patterns is not None:
             scanner.s.scan.allowed_zone_patterns = allowed_zone_patterns
         res = scanner.scan(bbox_around(lat, lon, radius_km))

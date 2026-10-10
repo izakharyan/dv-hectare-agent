@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import ssl
+import threading
 import time
+from collections import deque
 from typing import Any, Iterator, Optional
 
 import httpx
@@ -74,9 +77,24 @@ def blocked_seconds_left() -> int:
     return max(0, int(_BLOCKED_UNTIL - time.monotonic()))
 
 
+# Общий на весь процесс «светофор»: окно программы создаёт новый клиент на каждый запрос,
+# поэтому паузы, лимит в минуту и cookie держим не в клиенте, а здесь.
+_RATE_LOCK = threading.Lock()
+_LAST_REQUEST = 0.0
+_RECENT: deque = deque()          # время последних сетевых запросов (для лимита в минуту)
+_SLOWDOWN_UNTIL = 0.0             # после 429 временно замедляемся вдвое
+_SHARED_COOKIES = httpx.Cookies()
+_WARMED_AT = 0.0
+WARMUP_TTL = 20 * 60              # «прогрев» (страница карты + cookie) не чаще раза в 20 мин
+DEFAULT_MAX_PER_MINUTE = 20
+
+
 def reset_block() -> None:
-    global _BLOCKED_UNTIL
-    _BLOCKED_UNTIL = 0.0
+    """Сброс всего общего состояния (паузы после 403, лимитов, cookie) — для тестов и «перезапуска»."""
+    global _BLOCKED_UNTIL, _LAST_REQUEST, _SLOWDOWN_UNTIL, _WARMED_AT
+    _BLOCKED_UNTIL = _LAST_REQUEST = _SLOWDOWN_UNTIL = _WARMED_AT = 0.0
+    _RECENT.clear()
+    _SHARED_COOKIES.clear()
 
 
 def _describe_403(r: httpx.Response) -> str:
@@ -116,6 +134,7 @@ class NspdClient:
         *,
         timeout: float = 20.0,
         min_delay: float = 1.5,
+        max_per_minute: Optional[int] = None,
         block_cooldown: float = 30 * 60,
         retries: int = 3,
         cache_path: Optional[str] = ".cache/nspd.sqlite",
@@ -125,9 +144,9 @@ class NspdClient:
         transport: Optional[httpx.BaseTransport] = None,  # для тестов
     ):
         self.min_delay = min_delay
+        self.max_per_minute = max_per_minute or DEFAULT_MAX_PER_MINUTE
         self.block_cooldown = block_cooldown
         self.retries = retries
-        self._last_request = 0.0
         self.cache = ResponseCache(cache_path, cache_ttl) if cache_path else None
         kwargs: dict[str, Any] = dict(
             base_url=BASE_URL,
@@ -145,8 +164,10 @@ class NspdClient:
             if proxy:
                 kwargs["proxy"] = proxy
         self._http = httpx.Client(**kwargs)
-        self.request_count = 0
-        self._warmed = False
+        self._http.cookies.update(_SHARED_COOKIES)  # cookie от прошлого «прогрева» в этом запуске
+        self.request_count = 0                       # сетевые запросы этого клиента
+        self.cache_hits = 0                          # ответы из кэша (в НСПД не ходили)
+        self._warmed = bool(_WARMED_AT and time.monotonic() - _WARMED_AT < WARMUP_TTL)
 
     # ------------------------------------------------------------------ low level
     def close(self) -> None:
@@ -163,11 +184,14 @@ class NspdClient:
     def warmup(self) -> Optional[httpx.Response]:
         """Открывает страницу карты, как браузер: сервер выдаёт cookie, без которых защита
         от ботов может отвечать 403 на запросы к API. Cookie живут в этом клиенте."""
+        global _WARMED_AT
         self._warmed = True
         try:
             self._throttle()
             r = self._http.get("/map", params={"thematic": "PKK"}, headers=PAGE_HEADERS)
             self.request_count += 1
+            _WARMED_AT = time.monotonic()
+            _SHARED_COOKIES.update(self._http.cookies)
             log.debug("Прогрев НСПД: %s, cookies: %s", r.status_code, list(self._http.cookies.keys()))
             return r
         except httpx.HTTPError as e:
@@ -175,10 +199,25 @@ class NspdClient:
             return None
 
     def _throttle(self) -> None:
-        wait = self.min_delay - (time.monotonic() - self._last_request)
-        if wait > 0:
-            time.sleep(wait + random.uniform(0, self.min_delay * 0.3))
-        self._last_request = time.monotonic()
+        """Пауза между запросами + не больше max_per_minute в минуту — на весь процесс."""
+        global _LAST_REQUEST
+        with _RATE_LOCK:
+            now = time.monotonic()
+            factor = 2.0 if now < _SLOWDOWN_UNTIL else 1.0
+            delay = self.min_delay * factor
+            wait = delay - (now - _LAST_REQUEST)
+            if wait > 0:
+                wait += random.uniform(0, delay * 0.3)
+            while _RECENT and now - _RECENT[0] > 60:
+                _RECENT.popleft()
+            limit = max(1, int(self.max_per_minute / factor))
+            if len(_RECENT) >= limit:
+                wait = max(wait, 60 - (now - _RECENT[0]) + random.uniform(0.5, 2))
+                log.info("НСПД: лимит %d запросов в минуту — пауза %.0f с", limit, wait)
+            if wait > 0:
+                time.sleep(wait)
+            _LAST_REQUEST = time.monotonic()
+            _RECENT.append(_LAST_REQUEST)
 
     def request_json(
         self, method: str, path: str, *, params: Optional[dict] = None, json: Optional[dict] = None
@@ -188,6 +227,9 @@ class NspdClient:
             key = ResponseCache.make_key(method, path, params, json)
             cached = self.cache.get(key)
             if cached is not None:
+                self.cache_hits += 1
+                if isinstance(cached, dict) and cached.get("__too_big__"):
+                    raise TooBigContour("из кэша: этот контур НСПД уже отказался обрабатывать")
                 return cached
 
         left = blocked_seconds_left()
@@ -234,9 +276,14 @@ class NspdClient:
                 )
             if r.status_code == 404:
                 raise NotFound(path)
+            if r.status_code == 429:
+                global _SLOWDOWN_UNTIL
+                _SLOWDOWN_UNTIL = time.monotonic() + 10 * 60
+                log.warning("НСПД просит не спешить (429) — замедляюсь вдвое на 10 минут")
             if r.status_code == 429 or r.status_code >= 500:
                 body = r.text[:500]
                 if '"code":400104' in body:
+                    self._remember_too_big(key)
                     raise TooBigContour(body)
                 last_exc = NspdError(f"HTTP {r.status_code}: {body}")
                 time.sleep(3 * (2 ** attempt))
@@ -248,12 +295,18 @@ class NspdClient:
             except ValueError as e:
                 # НСПД на слишком больших контурах иногда отдаёт не-JSON
                 if path.endswith("/intersects"):
+                    self._remember_too_big(key)
                     raise TooBigContour("не-JSON ответ на intersects") from e
                 raise NspdError(f"Не-JSON ответ: {r.text[:200]}") from e
             if self.cache and key:
                 self.cache.set(key, data)
             return data
         raise NspdError(f"Исчерпаны попытки: {last_exc}")
+
+    def _remember_too_big(self, key: Optional[str]) -> None:
+        """Запоминаем «слишком большой контур», чтобы в следующий раз сразу дробить, не спрашивая НСПД."""
+        if self.cache and key:
+            self.cache.set(key, {"__too_big__": True})
 
     # ------------------------------------------------------------------ search
     def search(self, query: str, thematic_search_id: int = 1) -> list[dict]:
@@ -315,6 +368,26 @@ class NspdClient:
         mx, my = (xmin + xmax) / 2, (ymin + ymax) / 2
         for sub in ((xmin, ymin, mx, my), (mx, ymin, xmax, my), (xmin, my, mx, ymax), (mx, my, xmax, ymax)):
             yield from self.iter_bbox(sub, *category_ids, max_depth=max_depth, _depth=_depth + 1)
+
+    def iter_tiles(
+        self,
+        bbox: tuple[float, float, float, float],
+        *category_ids: int,
+        tile_deg: float = 0.02,
+    ) -> Iterator[dict]:
+        """Поиск по фиксированной сетке тайлов (~2×1.6 км на широте Приморья).
+
+        Границы тайлов не зависят от точки и радиуса запроса, поэтому повторные и соседние
+        сканы берут уже скачанные тайлы из кэша, а не идут в НСПД заново. Объекты за пределами
+        bbox (часть тайла снаружи) отфильтровывает вызывающий код."""
+        if tile_deg <= 0:
+            yield from self.iter_bbox(bbox, *category_ids)
+            return
+        xmin, ymin, xmax, ymax = bbox
+        for i in range(math.floor(xmin / tile_deg), math.ceil(xmax / tile_deg)):
+            for j in range(math.floor(ymin / tile_deg), math.ceil(ymax / tile_deg)):
+                tile = (round(i * tile_deg, 6), round(j * tile_deg, 6), round((i + 1) * tile_deg, 6), round((j + 1) * tile_deg, 6))
+                yield from self.iter_bbox(tile, *category_ids)
 
     # ------------------------------------------------------------------ point search
     def features_at_point(self, lon: float, lat: float, layer_id: int, feature_count: int = 10) -> list[dict]:

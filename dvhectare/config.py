@@ -13,6 +13,7 @@ class NspdSettings:
     timeout: float = 20.0
     min_delay: float = 1.5          # пауза между запросами, сек
     block_cooldown_min: float = 30  # после 403 не обращаться к НСПД столько минут (не продлевать бан)
+    max_per_minute: int = 20        # не больше стольких запросов к НСПД в минуту (на всю программу)
     retries: int = 3
     cache_path: Optional[str] = ".cache/nspd.sqlite"
     cache_ttl_days: int = 7
@@ -54,6 +55,9 @@ class ScanSettings:
     # Слои, которые не вырезаются, а только помечают кандидата (нужна ручная проверка)
     flag_layers: list[str] = field(default_factory=lambda: ["zouit", "forestry", "settlements", "water"])
     fetch_zone_permitted_uses: bool = True
+    combine_layers: bool = True      # все вспомогательные слои — одним запросом (меньше нагрузка на НСПД)
+    tile_deg: float = 0.02           # сетка тайлов для участков ЕГРН (~2 км): повторные/соседние сканы — из кэша
+    context_tile_deg: float = 0.04   # тайлы для зон/ООПТ/ЗОУИТ/кварталов (~3–4 км): объектов мало, один запрос на округу
     # Регулярки по названию/индексу территориальной зоны (например "^СХ", "Сельскохоз").
     # Пусто — не фильтровать.
     allowed_zone_patterns: list[str] = field(default_factory=list)

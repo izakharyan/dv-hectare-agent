@@ -27,6 +27,7 @@ def _client(s) -> NspdClient:
         timeout=n.timeout,
         min_delay=n.min_delay,
         block_cooldown=n.block_cooldown_min * 60,
+        max_per_minute=n.max_per_minute,
         retries=n.retries,
         cache_path=n.cache_path,
         cache_ttl=n.cache_ttl_days * 86400,

@@ -37,6 +37,7 @@ from .geo import (
     union_of,
 )
 from .layers import get_layer
+from .nspd.client import BlockedIP as NspdBlocked
 from .nspd.client import NspdClient
 from .sources import LayerSource, build_source
 
@@ -164,25 +165,63 @@ class Scanner:
             self.extra = [("exclude", src) for src in extra_sources]
 
     # --- слои
-    def fetch_layer(self, key: str, bbox: BBox) -> list[dict]:
-        layer = get_layer(key)
-        feats = dedupe(self.client.iter_bbox(bbox, layer.category_id))
-        # intersects по одной категории может вернуть «соседей» — отфильтруем по category
-        feats = [f for f in feats if (f.get("properties") or {}).get("category") in (None, layer.category_id)]
-        log.info("Слой %-18s: %d объектов", key, len(feats))
-        return feats
+    def fetch_layers(self, keys: list[str], bbox: BBox, tile_deg: Optional[float] = None) -> dict[str, list[dict]]:
+        """Несколько слоёв НСПД за минимум запросов.
 
-    def zones(self, bbox: BBox, with_permitted_uses: Optional[bool] = None, limit: int = 60) -> list[dict]:
-        feats = self.fetch_layer("terr_zones", bbox)
-        want = self.s.scan.fetch_zone_permitted_uses if with_permitted_uses is None else with_permitted_uses
-        for i, f in enumerate(feats):
+        * одним запросом intersects сразу по всем категориям (scan.combine_layers);
+        * по фиксированной сетке тайлов (scan.tile_deg) — повторные и соседние сканы берут
+          тайлы из кэша и в НСПД не ходят.
+        """
+        keys = list(dict.fromkeys(keys))
+        layers = {k: get_layer(k) for k in keys}
+        groups = [keys] if self.s.scan.combine_layers else [[k] for k in keys]
+        aoi = box(*bbox)
+        out: dict[str, list[dict]] = {k: [] for k in keys}
+        for group in groups:
+            cats = list(dict.fromkeys(layers[k].category_id for k in group))
+            feats = dedupe(self.client.iter_tiles(bbox, *cats, tile_deg=self.s.scan.tile_deg if tile_deg is None else tile_deg))
+            for f in feats:
+                g = feature_geometry(f)
+                if g is not None and not g.intersects(aoi):  # часть тайла вне области поиска
+                    continue
+                cat = (f.get("properties") or {}).get("category")
+                for k in group:
+                    if cat is None and len(group) == 1 or cat == layers[k].category_id:
+                        out[k].append(f)
+        for k in keys:
+            log.info("Слой %-18s: %d объектов", k, len(out[k]))
+        return out
+
+    def fetch_layer(self, key: str, bbox: BBox) -> list[dict]:
+        tile = self.s.scan.tile_deg if key in ("parcels", "free_parcels", "buildings") else self.s.scan.context_tile_deg
+        return self.fetch_layers([key], bbox, tile_deg=tile)[key]
+
+    def add_permitted_uses(self, zones: list[dict], limit: int = 10) -> None:
+        """ВРИ территориальных зон (отдельный запрос на каждую зону) — только для первых `limit`."""
+        for i, f in enumerate(zones):
+            p = f.setdefault("properties", {})
+            p.setdefault("_title", zone_title(f))
+            if "_permitted_uses" in p:
+                continue
+            if i >= limit:
+                p["_permitted_uses"] = []
+                continue
+            try:
+                p["_permitted_uses"] = self.client.tab_values(f, "permissionType") or []
+            except NspdBlocked:
+                raise
+            except Exception as e:  # вкладка есть не у всех зон
+                log.debug("ВРИ зоны %s: %s", f.get("id"), e)
+                p["_permitted_uses"] = []
+
+    def zones(self, bbox: BBox, with_permitted_uses: Optional[bool] = None, limit: int = 15,
+              feats: Optional[list[dict]] = None) -> list[dict]:
+        feats = self.fetch_layer("terr_zones", bbox) if feats is None else feats
+        for f in feats:
             f.setdefault("properties", {})["_title"] = zone_title(f)
-            if want and i < limit:
-                try:
-                    f["properties"]["_permitted_uses"] = self.client.tab_values(f, "permissionType") or []
-                except Exception as e:  # вкладка есть не у всех зон
-                    log.debug("ВРИ зоны %s: %s", f.get("id"), e)
-                    f["properties"]["_permitted_uses"] = []
+        want = self.s.scan.fetch_zone_permitted_uses if with_permitted_uses is None else with_permitted_uses
+        if want:
+            self.add_permitted_uses(feats, limit=limit)
         for role, src in self.extra:
             if role == "zones":
                 for f in src.fetch(bbox):
@@ -201,22 +240,25 @@ class Scanner:
                 "Уменьшите bbox или поднимите scan.max_area_km2 в config.yaml."
             )
         aoi = box(*bbox)
-        req0 = self.client.request_count
+        req0, hits0 = self.client.request_count, self.client.cache_hits
 
-        parcels_raw = self.fetch_layer("parcels", bbox)
+        # 1) участки ЕГРН + «свободные от прав» — плотный слой, отдельной группой
+        pl = self.fetch_layers(["parcels", "free_parcels"], bbox)
+        parcels_raw, free_raw = pl["parcels"], pl["free_parcels"]
         parcels = [parcel_record(f) for f in parcels_raw]
-
-        free_raw = self.fetch_layer("free_parcels", bbox)
         free_parcels = filter_parcels([parcel_record(f) for f in free_raw], self.s.parcel_filter)
 
-        exclusions = {k: self.fetch_layer(k, bbox) for k in self.s.scan.exclude_layers}
-        flags = {k: self.fetch_layer(k, bbox) for k in self.s.scan.flag_layers}
+        # 2) все остальные слои (исключения, флаги, терзоны, кварталы) — одной группой
+        ctx_keys = [*self.s.scan.exclude_layers, *self.s.scan.flag_layers, "terr_zones", "quarters"]
+        ctx = self.fetch_layers(ctx_keys, bbox, tile_deg=self.s.scan.context_tile_deg)
+        exclusions = {k: ctx[k] for k in self.s.scan.exclude_layers}
+        flags = {k: ctx[k] for k in self.s.scan.flag_layers}
         for role, src in self.extra:
             if role in ("exclude", "flag"):
                 target = exclusions if role == "exclude" else flags
                 target[src.name] = src.fetch(bbox)
 
-        zones = self.zones(bbox)
+        zones = self.zones(bbox, with_permitted_uses=False, feats=ctx["terr_zones"])
 
         # --- свободная территория
         occupied = union_of(r["geometry"] for r in parcels)
@@ -234,7 +276,12 @@ class Scanner:
                 break
 
         quarter_index = _Index([(feature_options(f).get("cad_num") or zone_title(f), feature_geometry(f), [])
-                                for f in self.fetch_layer("quarters", bbox)])
+                                for f in ctx["quarters"]])
+        # ВРИ запрашиваем только для зон, в которые попали кандидаты (а не для всех зон области)
+        if self.s.scan.fetch_zone_permitted_uses and cells:
+            cells_union = union_of(cells)
+            touched = [f for f in zones if (g := feature_geometry(f)) is not None and g.intersects(cells_union)]
+            self.add_permitted_uses(touched, limit=10)
         zone_index = _Index([(f["properties"]["_title"], feature_geometry(f), f["properties"].get("_permitted_uses") or []) for f in zones])
         flag_items = []
         for key, fs in flags.items():
@@ -281,7 +328,9 @@ class Scanner:
             "free_patches_ge_1ha": len(patches),
             "hectare_candidates": len(candidates),
             "nspd_requests": self.client.request_count - req0,
+            "nspd_from_cache": self.client.cache_hits - hits0,
         }
+        log.info("НСПД: %d запросов в сеть, %d ответов из кэша", stats["nspd_requests"], stats["nspd_from_cache"])
         return ScanResult(bbox, parcels, free_parcels, zones, exclusions, flags, free, candidates, stats)
 
 
