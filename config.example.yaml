@@ -18,6 +18,9 @@ gemini:
   timeout: 120
   fallback_models: null     # запасные модели при перегрузке (503): null = [gemini-3.5-flash-lite, gemini-3.1-flash-lite]
 
+gui:
+  mode: auto                # auto | window | browser. browser — интерфейс в Chrome/Firefox (нужно для Windows 7)
+
 agent:
   make_map: true            # после ответа агента строить карту out/agent_ДАТА/map.html
   open_map: true            # сразу открывать карту в браузере (false = только сохранить)

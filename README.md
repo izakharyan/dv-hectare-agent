@@ -86,6 +86,24 @@ python -m dvhectare.gui      # запустить окно из исходник
 - Первый запуск exe занимает 5–10 секунд (распаковка). Windows Defender иногда ошибочно ругается на
   exe, собранные PyInstaller, — тогда добавьте папку `dist` в исключения.
 
+### Windows 7 / 8 / 8.1
+
+Официальный Python для Windows 7 закончился на 3.8, а библиотеки программы требуют 3.10+, поэтому
+exe для Windows 7 собирается на неофициальной сборке Python [PythonWin7](https://github.com/adang1345/PythonWin7)
+(собирать можно на Windows 10/11):
+
+```powershell
+# 1) установить Python 3.12 x64 с github.com/adang1345/PythonWin7, например в C:\Python312-win7
+.\build_exe_win7.ps1 -Python C:\Python312-win7\python.exe   # → папка dist-win7
+```
+На Windows 7 запустите `DVHectare.exe --selftest check.txt` и проверьте, что в `check.txt` в конце `OK`.
+
+- Встроенного окна (WebView2) на Windows 7 нет — интерфейс открывается **в браузере**
+  (Chrome 109 или Firefox ESR 115 — последние версии для Windows 7). Работает так же: история, карта, «Копировать».
+  Программа закрывается сама через минуту после закрытия вкладки; ссылка на открытую программу — `open_in_browser.url`.
+- Нужны обновления Windows 7 SP1: KB3063858 (или KB2533623) и KB2999226 (Universal C Runtime).
+- Режим браузера можно включить и на любой системе: `gui: mode: browser` в config.yaml или флаг `--browser`.
+
 ## Как это работает
 
 ```

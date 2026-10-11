@@ -24,6 +24,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -116,6 +117,40 @@ class _Handler(SimpleHTTPRequestHandler):
 
     out_dir: Path = Path("out")
     history_dir: Path | None = None
+    api: "Api | None" = None          # режим браузера: методы Api доступны через POST /api/<метод>
+    token: str = ""                   # секрет в адресе страницы — чужие сайты не смогут дёрнуть API
+
+    # --- режим браузера (Windows 7 и любые системы без WebView2)
+    API_METHODS = {"init", "search", "poll", "list_dialogs", "new_dialog", "open_dialog", "delete_dialog", "ping"}
+
+    def do_POST(self) -> None:
+        if not self.path.startswith("/api/") or self.api is None:
+            self.send_error(404)
+            return
+        if not self.token or self.headers.get("X-Token") != self.token:
+            self.send_error(403)
+            return
+        name = self.path[len("/api/"):].split("?")[0]
+        if name not in self.API_METHODS:
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            args = json.loads(self.rfile.read(length) or b"[]") if length else []
+            if name == "ping":
+                result = {"ok": True}
+                self.api.last_ping = time.monotonic()
+            else:
+                result = getattr(self.api, name)(*args)
+            body, code = json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"), 200
+        except Exception as e:
+            body, code = json.dumps({"__error__": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode("utf-8"), 500
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def translate_path(self, path: str) -> str:
         if path.startswith("/out/"):
@@ -133,8 +168,10 @@ class _Handler(SimpleHTTPRequestHandler):
         pass
 
 
-def start_server(out_dir: Path, history_dir: Path | None = None) -> tuple[ThreadingHTTPServer, int]:
-    handler = type("Handler", (_Handler,), {"out_dir": out_dir, "history_dir": history_dir})
+def start_server(
+    out_dir: Path, history_dir: Path | None = None, api: "Api | None" = None, token: str = ""
+) -> tuple[ThreadingHTTPServer, int]:
+    handler = type("Handler", (_Handler,), {"out_dir": out_dir, "history_dir": history_dir, "api": api, "token": token})
     srv = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(handler, directory=str(STATIC_DIR)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, srv.server_address[1]
@@ -171,6 +208,7 @@ class Api:
         self.events: list[dict] = []
         self.sink_lock = threading.Lock()
         self.busy = False
+        self.last_ping = 0.0
         self.dialog = self._new_dialog()
         h = _ListHandler(self.events, self.sink_lock)
         h.setFormatter(logging.Formatter("%(message)s"))
@@ -402,8 +440,14 @@ def selftest(path: str) -> int:
         import folium
         import google.genai  # noqa: F401
         import pyproj
-        import webview  # noqa: F401
         from shapely.geometry import Point
+
+        try:
+            import webview  # noqa: F401
+
+            lines.append("pywebview ok (окно WebView2)")
+        except Exception:
+            lines.append("pywebview нет — интерфейс будет в браузере")
 
         from .geo import reproject
 
@@ -414,6 +458,7 @@ def selftest(path: str) -> int:
         lines.append(f"folium ok: {out.stat().st_size} байт")
         assert (STATIC_DIR / "index.html").exists(), f"нет {STATIC_DIR / 'index.html'}"
         lines.append("ui ok")
+        lines.append(f"Python {sys.version.split()[0]} · Windows {getattr(sys, 'getwindowsversion', lambda: '-')()}")
         lines.append("OK")
         code = 0
     except Exception:
@@ -423,11 +468,65 @@ def selftest(path: str) -> int:
     return code
 
 
+def _old_windows() -> bool:
+    """Windows 7/8/8.1: встроенного WebView2 нет (последняя версия для них — 109), окно работает в браузере."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return sys.getwindowsversion().major < 10
+    except Exception:
+        return False
+
+
+def _gui_mode(root: Path) -> str:
+    if "--browser" in sys.argv:
+        return "browser"
+    if "--window" in sys.argv:
+        return "window"
+    try:
+        import yaml
+
+        mode = ((yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {}).get("gui") or {}).get("mode")
+    except Exception:
+        mode = None
+    if mode in ("browser", "window"):
+        return mode
+    return "browser" if _old_windows() else "window"
+
+
+def run_browser(api: "Api", root: Path) -> None:
+    """Интерфейс в обычном браузере (Chrome/Firefox/Edge). Программа сама закрывается,
+    когда вкладка закрыта дольше минуты."""
+    import secrets
+    import webbrowser
+
+    token = secrets.token_urlsafe(16)
+    srv, port = start_server(api.out_dir, api.store.root, api=api, token=token)
+    url = f"http://127.0.0.1:{port}/index.html?token={token}"
+    log.info("Интерфейс открыт в браузере: %s", url)
+    (root / "open_in_browser.url").write_text(f"[InternetShortcut]\nURL={url}\n", encoding="utf-8")
+    api.last_ping = time.monotonic()
+    webbrowser.open(url)
+    try:
+        while True:
+            time.sleep(5)
+            idle = time.monotonic() - api.last_ping
+            if idle > 75 and not api.busy:
+                log.info("Вкладка программы закрыта — завершаю работу")
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.shutdown()
+        try:
+            (root / "open_in_browser.url").unlink()
+        except OSError:
+            pass
+
+
 def main() -> None:
     if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
         sys.exit(selftest(sys.argv[2]))
-
-    import webview
 
     root = base_dir()
     os.chdir(root)
@@ -437,16 +536,26 @@ def main() -> None:
 
     api = Api(root)
     atexit.register(api.cleanup)
-    _srv, port = start_server(api.out_dir, api.store.root)
-    webview.create_window(
-        "ДВ-гектар — поиск земли",
-        f"http://127.0.0.1:{port}/index.html",
-        js_api=api,
-        width=1440,
-        height=860,
-        min_size=(1100, 600),
-    )
-    webview.start()
+    mode = _gui_mode(root)
+    if mode == "window":
+        try:
+            import webview
+
+            _srv, port = start_server(api.out_dir, api.store.root)
+            webview.create_window(
+                "ДВ-гектар — поиск земли",
+                f"http://127.0.0.1:{port}/index.html",
+                js_api=api,
+                width=1440,
+                height=860,
+                min_size=(1100, 600),
+            )
+            webview.start()
+            api.cleanup()
+            return
+        except Exception as e:  # нет pywebview/WebView2 — работаем в браузере
+            log.warning("Окно WebView2 недоступно (%s) — открываю интерфейс в браузере", e)
+    run_browser(api, root)
     api.cleanup()
 
 

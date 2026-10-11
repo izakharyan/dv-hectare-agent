@@ -32,6 +32,12 @@ class GeminiSettings:
 
 
 @dataclass
+class GuiSettings:
+    # auto — окно (WebView2) на Windows 10/11, браузер на Windows 7/8; window / browser — принудительно
+    mode: str = "auto"
+
+
+@dataclass
 class AgentSettings:
     make_map: bool = True            # строить итоговую карту после ответа агента
     open_map: bool = True            # сразу открывать её в браузере
@@ -92,6 +98,7 @@ class Settings:
     nspd: NspdSettings = field(default_factory=NspdSettings)
     gemini: GeminiSettings = field(default_factory=GeminiSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
+    gui: GuiSettings = field(default_factory=GuiSettings)
     scan: ScanSettings = field(default_factory=ScanSettings)
     parcel_filter: ParcelFilter = field(default_factory=ParcelFilter)
     extra_sources: list[ExtraSource] = field(default_factory=list)

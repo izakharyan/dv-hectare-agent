@@ -11,3 +11,7 @@ dist/
 *.spec
 gui_state.json
 history/
+dist-win7/
+build-win7/
+.venv-win7/
+open_in_browser.url

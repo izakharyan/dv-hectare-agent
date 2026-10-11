@@ -324,6 +324,22 @@ async function init() {
   ($("key").value ? $("prompt") : $("key")).focus();
 }
 
+// Режим браузера (Windows 7 и системы без WebView2): те же методы через HTTP к локальной программе
+const TOKEN = new URLSearchParams(location.search).get("token");
+if (TOKEN && !window.pywebview) {
+  const call = async (name, args) => {
+    const r = await fetch("/api/" + name, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Token": TOKEN }, body: JSON.stringify(args),
+    });
+    const data = await r.json();
+    if (data && data.__error__) throw new Error(data.__error__);
+    return data;
+  };
+  window.pywebview = { api: new Proxy({}, { get: (_, name) => (...args) => call(name, args) }) };
+  setInterval(() => call("ping", []).catch(() => { $("status").textContent = "Программа закрыта — откройте её заново"; }), 15000);
+  call("ping", []);
+}
+
 if (window.pywebview && window.pywebview.api && window.pywebview.api.init) init();
 else window.addEventListener("pywebviewready", init);
 </script>

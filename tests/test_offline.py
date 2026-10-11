@@ -784,3 +784,55 @@ def test_what_is_here_uses_scan_cache_not_wms(tmp_path, fake):
     zs = h["zones_in_area"](*CENTER, radius_km=0.5)
     assert zs["zones"] and c.request_count == before
     assert not list(tmp_path.glob("scan_*/scan.gpkg"))  # агент не пишет GPKG
+
+
+def test_browser_mode_http_bridge(tmp_path):
+    """Режим браузера (Windows 7): методы окна по HTTP, только с секретным токеном из адреса страницы."""
+    import time
+    import urllib.error
+    import urllib.request
+
+    from dvhectare import gui
+
+    (tmp_path / "config.yaml").write_text("gemini:\n  api_key: k\n", encoding="utf-8")
+
+    def fake_search(model, prompt, root, api_key=None, out_dir=None, conversation=None):
+        return "ответ", None
+
+    api = gui.Api(tmp_path, search_fn=fake_search)
+    srv, port = gui.start_server(api.out_dir, api.store.root, api=api, token="secret")
+    base = f"http://127.0.0.1:{port}"
+
+    def call(name, args, token="secret"):
+        req = urllib.request.Request(base + "/api/" + name, data=json.dumps(args).encode(), method="POST",
+                                     headers={"Content-Type": "application/json", "X-Token": token})
+        return json.loads(urllib.request.urlopen(req, timeout=5).read().decode("utf-8"))
+
+    try:
+        assert call("init", [])["api_key"] == "k"
+        assert call("ping", []) == {"ok": True} and api.last_ping > 0
+        assert call("search", ["m", "вопрос", "k"])["ok"]
+        t = time.time()
+        while call("poll", [0])["busy"] and time.time() - t < 5:
+            time.sleep(0.05)
+        assert call("poll", [0])["events"][-1]["answer"] == "ответ"
+        for bad in (("init", [], "wrong"), ("cleanup", [], "secret"), ("_worker", [], "secret")):
+            with pytest.raises(urllib.error.HTTPError):  # без токена и вне белого списка — нельзя
+                call(*bad)
+    finally:
+        srv.shutdown()
+        api.cleanup()
+
+
+def test_gui_mode_selection(tmp_path, monkeypatch):
+    from dvhectare import gui
+
+    monkeypatch.setattr(gui.sys, "argv", ["x"])
+    monkeypatch.setattr(gui, "_old_windows", lambda: True)
+    assert gui._gui_mode(tmp_path) == "browser"          # Windows 7/8 — браузер
+    monkeypatch.setattr(gui, "_old_windows", lambda: False)
+    assert gui._gui_mode(tmp_path) == "window"
+    (tmp_path / "config.yaml").write_text("gui:\n  mode: browser\n", encoding="utf-8")
+    assert gui._gui_mode(tmp_path) == "browser"          # принудительно из конфига
+    monkeypatch.setattr(gui.sys, "argv", ["x", "--window"])
+    assert gui._gui_mode(tmp_path) == "window"           # флаг важнее конфига
