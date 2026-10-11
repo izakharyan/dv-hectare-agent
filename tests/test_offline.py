@@ -666,9 +666,12 @@ def test_nspd_warmup_cookie_passes_bot_protection(fake):
     c = NspdClient(min_delay=0, cache_path=None, transport=httpx.MockTransport(handler))
     assert c.find_parcel("25:27:000000:2")["properties"]["options"]["specified_area"] == 5000
 
-    # cookie «протухли» посреди работы — клиент сам получает их заново
+    # cookie пропали посреди работы — на 403 НЕ повторяем (повторы продлевают бан WAF)
+    from dvhectare.nspd.client import BlockedIP
+
     c._http.cookies.clear()
-    assert c.find_parcel("25:27:000000:2") is not None
+    with pytest.raises(BlockedIP):
+        c.find_parcel("25:27:000000:3")
 
 
 def test_map_has_place_names_overlay(client, tmp_path):
@@ -760,3 +763,24 @@ def test_agent_scan_limit_per_request(client, tmp_path):
     for _ in range(MAX_SCANS_PER_REQUEST):
         assert "error" not in h["scan_for_hectares"](*CENTER, radius_km=0.6)
     assert "Лимит" in h["scan_for_hectares"](*CENTER, radius_km=0.6)["error"]
+
+
+def test_what_is_here_uses_scan_cache_not_wms(tmp_path, fake):
+    """«Что в точке» после скана — из кэша скана, без запросов; WMS GetFeatureInfo не вызывается вовсе."""
+    import dvhectare.nspd.client as nc
+    from dvhectare.agent.tools import make_handlers
+
+    def handler(request):
+        assert "/wms" not in request.url.path, "WMS GetFeatureInfo блокируется WAF НСПД — не должен вызываться"
+        return fake.handler(request)
+
+    c = NspdClient(min_delay=0, cache_path=str(tmp_path / "c.sqlite"), transport=httpx.MockTransport(handler))
+    h = make_handlers(Scanner(c, Settings(), extra_sources=[]), str(tmp_path))
+    h["scan_for_hectares"](*CENTER, radius_km=0.6)
+    before = c.request_count
+    here = h["what_is_here"](*CENTER)
+    assert c.request_count == before  # всё из кэша
+    assert any("СХ-1" in z for z in here["terr_zones"])
+    zs = h["zones_in_area"](*CENTER, radius_km=0.5)
+    assert zs["zones"] and c.request_count == before
+    assert not list(tmp_path.glob("scan_*/scan.gpkg"))  # агент не пишет GPKG

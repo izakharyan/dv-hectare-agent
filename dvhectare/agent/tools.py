@@ -88,10 +88,9 @@ def make_handlers(scanner: Scanner, out_dir: str, session_map: Any = None) -> di
         keys = layers or ["parcels", "terr_zones", "zouit", "oopt", "settlements", "forestry"]
         out: dict[str, Any] = {}
         raw: dict[str, list[dict]] = {}
-        for k in keys:
-            feats = client.features_at_point(lon, lat, get_layer(k).layer_id)
+        for k, feats in scanner.at_point(lat, lon, [get_layer(k).key for k in keys]).items():
             raw[k] = feats
-            if k == "parcels":
+            if k in ("parcels", "free_parcels"):
                 out[k] = [{kk: vv for kk, vv in parcel_record(f).items() if kk != "geometry"} for f in feats]
             else:
                 out[k] = [zone_title(f) for f in feats]
@@ -121,7 +120,7 @@ def make_handlers(scanner: Scanner, out_dir: str, session_map: Any = None) -> di
         if allowed_zone_patterns is not None:
             scanner.s.scan.allowed_zone_patterns = allowed_zone_patterns
         res = scanner.scan(bbox_around(lat, lon, radius_km))
-        path = save_scan(res, out_dir)
+        path = save_scan(res, out_dir, gpkg=False, html=False)  # карту строит сам агент; GPKG в окне не нужен
         if sm is not None:
             sm.add_scan(res)
         return {"saved_to": str(path), **res.summary()}

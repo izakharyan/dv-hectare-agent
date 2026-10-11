@@ -192,6 +192,37 @@ class Scanner:
             log.info("Слой %-18s: %d объектов", k, len(out[k]))
         return out
 
+    PARCEL_KEYS = ["parcels", "free_parcels"]
+
+    def context_keys(self) -> list[str]:
+        """Состав «вспомогательной» группы слоёв. Один и тот же для скана, точки и зон —
+        тогда все инструменты попадают в одни и те же записи кэша."""
+        return list(dict.fromkeys([*self.s.scan.exclude_layers, *self.s.scan.flag_layers, "terr_zones", "quarters"]))
+
+    def fetch_standard(self, bbox: BBox, parcels: bool = True, context: bool = True) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        if parcels:
+            out.update(self.fetch_layers(self.PARCEL_KEYS, bbox, tile_deg=self.s.scan.tile_deg))
+        if context:
+            out.update(self.fetch_layers(self.context_keys(), bbox, tile_deg=self.s.scan.context_tile_deg))
+        return out
+
+    def at_point(self, lat: float, lon: float, keys: list[str]) -> dict[str, list[dict]]:
+        """Что лежит в точке — через тот же запрос по контуру и тот же кэш, что и скан.
+        (WMS GetFeatureInfo НСПД защита от ботов блокирует по правилу WAF — не используем.)"""
+        from shapely.geometry import Point
+
+        d = 0.0003  # ~30 м — запрос всё равно идёт тайлами, а после скана берётся из кэша
+        bbox = (lon - d, lat - d, lon + d, lat + d)
+        want_parcels = any(k in self.PARCEL_KEYS for k in keys)
+        want_ctx = any(k not in self.PARCEL_KEYS for k in keys)
+        data = self.fetch_standard(bbox, parcels=want_parcels, context=want_ctx)
+        extra = [k for k in keys if k not in data]  # слой не из стандартных групп (здания и т.п.)
+        if extra:
+            data.update(self.fetch_layers(extra, bbox))
+        pt = Point(lon, lat).buffer(1e-6)
+        return {k: [f for f in data.get(k, []) if (g := feature_geometry(f)) is not None and g.intersects(pt)] for k in keys}
+
     def fetch_layer(self, key: str, bbox: BBox) -> list[dict]:
         tile = self.s.scan.tile_deg if key in ("parcels", "free_parcels", "buildings") else self.s.scan.context_tile_deg
         return self.fetch_layers([key], bbox, tile_deg=tile)[key]
@@ -216,7 +247,7 @@ class Scanner:
 
     def zones(self, bbox: BBox, with_permitted_uses: Optional[bool] = None, limit: int = 15,
               feats: Optional[list[dict]] = None) -> list[dict]:
-        feats = self.fetch_layer("terr_zones", bbox) if feats is None else feats
+        feats = self.fetch_standard(bbox, parcels=False)["terr_zones"] if feats is None else feats
         for f in feats:
             f.setdefault("properties", {})["_title"] = zone_title(f)
         want = self.s.scan.fetch_zone_permitted_uses if with_permitted_uses is None else with_permitted_uses
@@ -243,14 +274,13 @@ class Scanner:
         req0, hits0 = self.client.request_count, self.client.cache_hits
 
         # 1) участки ЕГРН + «свободные от прав» — плотный слой, отдельной группой
-        pl = self.fetch_layers(["parcels", "free_parcels"], bbox)
+        pl = self.fetch_standard(bbox, context=False)
         parcels_raw, free_raw = pl["parcels"], pl["free_parcels"]
         parcels = [parcel_record(f) for f in parcels_raw]
         free_parcels = filter_parcels([parcel_record(f) for f in free_raw], self.s.parcel_filter)
 
         # 2) все остальные слои (исключения, флаги, терзоны, кварталы) — одной группой
-        ctx_keys = [*self.s.scan.exclude_layers, *self.s.scan.flag_layers, "terr_zones", "quarters"]
-        ctx = self.fetch_layers(ctx_keys, bbox, tile_deg=self.s.scan.context_tile_deg)
+        ctx = self.fetch_standard(bbox, parcels=False)
         exclusions = {k: ctx[k] for k in self.s.scan.exclude_layers}
         flags = {k: ctx[k] for k in self.s.scan.flag_layers}
         for role, src in self.extra:

@@ -243,7 +243,6 @@ class NspdClient:
             self.warmup()
 
         last_exc: Optional[Exception] = None
-        rewarmed = False
         for attempt in range(self.retries + 1):
             self._throttle()
             try:
@@ -255,14 +254,7 @@ class NspdClient:
                 time.sleep(2 ** attempt)
                 continue
 
-            if r.status_code == 403 and not rewarmed:
-                # возможно, истекли cookie защиты — получаем заново и пробуем ещё раз
-                rewarmed = True
-                log.info("НСПД ответил 403 — обновляю cookie и повторяю запрос")
-                self.warmup()
-                time.sleep(2)
-                r = self._http.request(method, path, params=params, json=json)
-                self.request_count += 1
+            # На 403 больше НЕ повторяем: правило WAF («Rule: …») от повторов только продлевает блокировку.
             if r.status_code == 403:
                 global _BLOCKED_UNTIL
                 _BLOCKED_UNTIL = time.monotonic() + self.block_cooldown
@@ -391,7 +383,10 @@ class NspdClient:
 
     # ------------------------------------------------------------------ point search
     def features_at_point(self, lon: float, lat: float, layer_id: int, feature_count: int = 10) -> list[dict]:
-        """WMS GetFeatureInfo: что лежит в точке на указанном слое."""
+        """WMS GetFeatureInfo: что лежит в точке на указанном слое.
+
+        ВНИМАНИЕ: защита НСПД блокирует такие запросы правилом WAF (403 «Rule: …») и затем банит IP.
+        Программа его не использует — см. Scanner.at_point (запрос по контуру + кэш)."""
         d = 0.00001  # ~1 м
         size = 101
         params = {
